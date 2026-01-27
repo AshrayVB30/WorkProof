@@ -1,0 +1,9 @@
+pyautogui>=0.9.54
+psutil>=5.9.8
+pynput>=1.7.6
+pygetwindow>=0.0.9; sys_platform == 'win32'
+pillow>=10.2.0
+requests>=2.31.0
+cryptography>=42.0.0
+schedule>=1.2.0
+python-dateutil>=2.8.2

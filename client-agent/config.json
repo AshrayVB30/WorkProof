@@ -1,0 +1,21 @@
+{
+  "server_url": "http://localhost:5000",
+  "user_email": "",
+  "user_password": "",
+  "collection_interval": 60,
+  "screenshot_enabled": true,
+  "screenshot_interval": 300,
+  "idle_threshold": 300,
+  "approved_applications": [
+    "chrome.exe",
+    "msedge.exe",
+    "excel.exe",
+    "word.exe",
+    "notepad.exe",
+    "code.exe"
+  ],
+  "blur_screenshots": true,
+  "offline_storage_path": "./offline_data",
+  "auto_start": false,
+  "minimize_to_tray": true
+}
