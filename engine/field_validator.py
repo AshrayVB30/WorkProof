@@ -118,27 +118,21 @@ class FieldNormalizer:
     
     @staticmethod
     def normalize_text(value: str) -> str:
-        """Normalize text: trim, lowercase, normalize spaces"""
+        """Normalize text: trim, normalize spaces (Keep Case)"""
         if not value:
             return ""
-        # Trim, lowercase, collapse multiple spaces
-        normalized = ' '.join(value.strip().lower().split())
+        # Trim and collapse multiple spaces, but KEEP CASE
+        normalized = ' '.join(value.strip().split())
         return normalized
     
     @staticmethod
     def normalize_date(value: str, date_format: str = "%m/%d/%Y") -> Optional[datetime]:
-        """Parse and normalize date values"""
+        """Parse and normalize date values (Strict Format)"""
         if not value or value.strip() == "":
             return None
         try:
-            # Try multiple common formats
-            formats = [date_format, "%Y-%m-%d", "%d/%m/%Y", "%m-%d-%Y", "%d-%m-%Y"]
-            for fmt in formats:
-                try:
-                    return datetime.strptime(value.strip(), fmt)
-                except ValueError:
-                    continue
-            return None
+            # Strict format check as requested
+            return datetime.strptime(value.strip(), date_format)
         except (ValueError, AttributeError):
             return None
     
@@ -258,7 +252,7 @@ class FieldValidator:
                     result["error_type"] = "value_error"
                     result["message"] = f"Expected ${ref_norm:.2f}, got ${user_norm:.2f}"
         
-        # RULE C: Text (Case-Insensitive Exact Match)
+        # RULE C: Text (Case-Sensitive Exact Match)
         elif validation_rule == "C" or field_type == "text":
             ref_norm = self.normalizer.normalize_text(reference_value)
             user_norm = self.normalizer.normalize_text(user_value)
@@ -268,7 +262,7 @@ class FieldValidator:
             
             if not result["is_correct"]:
                 result["error_type"] = "value_error"
-                result["message"] = f"Expected '{reference_value}', got '{user_value}'"
+                result["message"] = f"Expected '{reference_value}', got '{user_value}' (Case-Sensitive)"
         
         # RULE D: Email (Strict Match)
         elif validation_rule == "D" or field_type == "email":
@@ -288,11 +282,21 @@ class FieldValidator:
             user_norm = self.normalizer.normalize_phone(user_value)
             result["normalized_reference"] = ref_norm
             result["normalized_user"] = user_norm
-            result["is_correct"] = (ref_norm == user_norm)
+            
+            # Check for exactly 11 digits and no special characters in user input
+            has_no_special = re.match(r'^\d+$', user_value.strip()) is not None
+            is_eleven_digits = len(user_norm) == 11
+            
+            result["is_correct"] = (ref_norm == user_norm) and is_eleven_digits and has_no_special
             
             if not result["is_correct"]:
                 result["error_type"] = "value_error"
-                result["message"] = f"Expected '{reference_value}', got '{user_value}'"
+                if not has_no_special:
+                    result["message"] = "Special characters not allowed in phone number"
+                elif not is_eleven_digits:
+                    result["message"] = "Phone number must be exactly 11 digits"
+                else:
+                    result["message"] = f"Expected '{ref_norm}', got '{user_norm}'"
         
         # RULE F: Date (Normalized Comparison)
         elif validation_rule == "F" or field_type == "date":

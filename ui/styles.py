@@ -16,17 +16,44 @@ def get_modern_stylesheet():
         width: 2px;
     }
     
-    QTextEdit {
+    QTableWidget {
         background-color: #25262b;
         border: 1px solid #373a40;
         border-radius: 8px;
-        padding: 10px;
-        selection-background-color: #4c6ef5;
+        gridline-color: #373a40;
+        selection-background-color: #3b5bdb;
         selection-color: white;
-        line-height: 1.5;
+        outline: none;
     }
     
-    QTextEdit:focus {
+    QTableWidget::item {
+        padding: 5px;
+    }
+
+    QHeaderView::section {
+        background-color: #2c2e33;
+        color: #a1a1aa;
+        padding: 8px;
+        border: none;
+        border-right: 1px solid #373a40;
+        border-bottom: 1px solid #373a40;
+        font-weight: bold;
+    }
+
+    QHeaderView::section:last {
+        border-right: none;
+    }
+
+    QTextEdit, QLineEdit, QSpinBox, QDoubleSpinBox, QDateEdit, QComboBox {
+        background-color: #25262b;
+        border: 1px solid #373a40;
+        border-radius: 6px;
+        padding: 8px;
+        color: #e0e0e0;
+        selection-background-color: #4c6ef5;
+    }
+
+    QTextEdit:focus, QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {
         border: 1px solid #4c6ef5;
     }
     

@@ -13,9 +13,10 @@ class ReportGenerator:
         if not os.path.exists(self.output_dir):
             os.makedirs(self.output_dir)
 
+
     def generate_pdf(self, session_data, filename=None):
         """
-        Creates a simplified PDF report with session info, data entry input, and reference image.
+        Creates a PDF report comparing Reference Data vs User Input.
         """
         if filename is None:
             filename = f"report_{session_data.get('session_id', 'unknown')}.pdf"
@@ -27,103 +28,105 @@ class ReportGenerator:
         
         # Header
         c.setFont("Helvetica-Bold", 18)
-        c.drawString(50, height - 50, "WorkProof Audit Report")
+        c.drawString(50, height - 50, "WorkProof Accuracy Report")
         c.setFont("Helvetica", 10)
-        c.drawString(50, height - 70, f"Data Entry Session Report")
+        c.drawString(50, height - 70, f"Web Reference vs User Input Comparison")
         c.line(50, height - 75, width - 50, height - 75)
         
-        # Session Info
+        # Summary Info & Metrics
         y = height - 100
         c.setFont("Helvetica-Bold", 12)
-        c.drawString(50, y, "Session Information")
+        c.drawString(50, y, "Session Summary")
         y -= 20
         c.setFont("Helvetica", 10)
         c.drawString(70, y, f"Session ID: {session_data.get('session_id')}")
-        y -= 15
-        c.drawString(70, y, f"Timestamp: {session_data.get('timestamp', 'N/A')}")
+        c.drawString(300, y, f"Timestamp: {session_data.get('timestamp', 'N/A')}")
         y -= 15
         c.drawString(70, y, f"Time Spent: {session_data.get('time_spent')}")
+        
+        # Metrics Highlight
+        accuracy = session_data.get('accuracy', 0)
+        errors = session_data.get('error_count', 0)
+        total = session_data.get('total_fields', 0)
+        correct = session_data.get('correct_fields', 0)
+        
         y -= 30
+        c.setFont("Helvetica-Bold", 11)
+        c.drawString(70, y, f"Overall Accuracy: {accuracy}%")
+        c.drawString(250, y, f"Correct Matches: {correct}/{total}")
+        c.drawString(450, y, f"Mismatches: {errors}")
+        y -= 10
+        c.line(70, y, width - 70, y)
+        y -= 40
         
-        # Data Entry Input
+        # Detailed Comparison Table
         c.setFont("Helvetica-Bold", 12)
-        c.drawString(50, y, "Data Entry Input")
-        y -= 20
-        c.setFont("Helvetica", 9)
+        c.drawString(50, y, "Detailed Field Comparison")
+        y -= 25
         
-        # Define categories for organized display
-        categories = {
-            "Customer Information": ["Customer ID", "First Name", "Last Name", "Age", "Gender", 
-                                    "Address", "City", "Contact Number", "Email"],
-            "Account Information": ["Account Type", "Account Balance", "Date Of Account Opening", 
-                                   "Last Transaction Date", "Branch ID", "Transaction ID"],
-            "Transaction Information": ["Transaction Date", "Transaction Type", "Transaction Amount", 
-                                       "Account Balance After Transaction"],
-            "Loan Information": ["Loan ID", "Loan Amount", "Loan Type", "Interest Rate", 
-                                "Loan Term", "Approval/Rejection Date", "Loan Status", "Anomaly"],
-            "Credit Card Information": ["Card ID", "Card Type", "Credit Limit", "Credit Card Balance", 
-                                       "Minimum Payment Due", "Payment Due Date", 
-                                       "Last Credit Card Payment Date", "Rewards Points"],
-            "Feedback Information": ["Feedback ID", "Feedback Date", "Feedback Type", 
-                                    "Resolution Status", "Resolution Date"]
-        }
+        # Table Header
+        data = [["Field Name", "Reference (Web)", "User Input", "Result"]]
         
-        form_data = session_data.get('form_data', {})
-        
-        for category, field_names in categories.items():
-            # Check if we need a new page
-            if y < 100:
-                c.showPage()
-                y = height - 50
+        # Field results
+        field_results = session_data.get('field_results', [])
+        for res in field_results:
+            status = "MATCH ✅" if res.get('is_correct') else ("MISMATCH ❌" if res.get('has_both') else "PENDING")
+            data.append([
+                res.get('field', ''),
+                str(res.get('reference', ''))[:40],
+                str(res.get('user', ''))[:40],
+                status
+            ])
             
-            c.setFont("Helvetica-Bold", 10)
-            c.drawString(50, y, f"[{category}]")
-            y -= 18
-            c.setFont("Helvetica", 9)
-            
-            for field_name in field_names:
-                # Check if we need a new page
-                if y < 80:
-                    c.showPage()
-                    y = height - 50
-                    c.setFont("Helvetica", 9)
-                
-                value = form_data.get(field_name, "")
-                
-                # Display field name and value on the same line with proper alignment
-                c.setFont("Helvetica", 9)
-                c.drawString(70, y, f"{field_name}:")
-                
-                if value and str(value).strip():
-                    c.setFillColorRGB(0, 0, 0)
-                    c.setFont("Helvetica-Bold", 9)
-                    # Align values at a fixed position (250 pixels from left)
-                    c.drawString(250, y, f"{str(value)[:60]}")
-                    c.setFont("Helvetica", 9)
-                else:
-                    c.setFillColorRGB(0.6, 0.6, 0.6)
-                    c.setFont("Helvetica-Oblique", 8)
-                    c.drawString(250, y, "(No data entered)")
-                    c.setFillColorRGB(0, 0, 0)
-                    c.setFont("Helvetica", 9)
-                
-                y -= 14
-            
-            y -= 8
+        # Create Table
+        t = Table(data, colWidths=[120, 160, 160, 80])
         
-        # Reference Image
-        if session_data.get('reference_path') and os.path.exists(session_data['reference_path']):
-            if y < 300:
+        # Table Style
+        style = TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, 0), 10),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+            ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black),
+            ('FONTSIZE', (0, 1), (-1, -1), 8),
+            ('ALIGN', (0, 1), (0, -1), 'LEFT'), # Left align field names
+        ])
+        
+        # Add conditional coloring for results
+        for i, res in enumerate(field_results):
+            if res.get('is_correct'):
+                style.add('TEXTCOLOR', (3, i+1), (3, i+1), colors.green)
+            elif res.get('has_both'):
+                style.add('TEXTCOLOR', (3, i+1), (3, i+1), colors.red)
+        
+        t.setStyle(style)
+        
+        # Wrap table and draw it (handles page breaks better if we used platypus SimpleDocTemplate)
+        # But for this simple canvas implementation, we'll just check height
+        table_height = t.wrap(0, 0)[1]
+        if y - table_height < 50:
+            c.showPage()
+            y = height - 50
+            
+        t.drawOn(c, 50, y - table_height)
+        y -= (table_height + 40)
+        
+        # Screen Monitor Screenshot (if available)
+        if session_data.get('screenshot_path') and os.path.exists(session_data['screenshot_path']):
+            if y < 200:
                 c.showPage()
                 y = height - 50
             
             c.setFont("Helvetica-Bold", 12)
-            c.drawString(50, y, "Reference Image")
+            c.drawString(50, y, "Session Screenshot")
             y -= 15
             try:
                 img_height = min(250, y - 50)
                 c.drawImage(
-                    os.path.abspath(session_data['reference_path']), 
+                    os.path.abspath(session_data['screenshot_path']), 
                     50, y - img_height, 
                     width=500, 
                     height=img_height, 
@@ -131,7 +134,10 @@ class ReportGenerator:
                 )
             except Exception as e:
                 c.setFont("Helvetica", 10)
-                c.drawString(70, y - 20, f"[Error loading image: {str(e)}]")
+                c.drawString(70, y - 20, f"[Error loading screenshot: {str(e)}]")
+
+        c.save()
+        return filepath
 
         c.save()
         return filepath

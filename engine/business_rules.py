@@ -206,10 +206,10 @@ class BusinessRulesEngine:
         
         # Age check
         if age is not None and isinstance(age, (int, float)):
-            if age < 0 or age > 150:
+            if age < 0 or age > 100:
                 self.violations.append(BusinessRuleViolation(
                     "Invalid Age",
-                    f"Age ({age}) is outside reasonable range (0-150)",
+                    f"Age ({age}) is outside reasonable range (0-100)",
                     ["Age"],
                     "error"
                 ))
@@ -217,7 +217,7 @@ class BusinessRulesEngine:
         # Interest rate check
         if interest_rate is not None and isinstance(interest_rate, (int, float)):
             if interest_rate < 0 or interest_rate > 100:
-                self.violations.append(BusinessRuleViolation(
+                self.violations.append(3(
                     "Invalid Interest Rate",
                     f"Interest Rate ({interest_rate}%) is outside valid range (0-100%)",
                     ["Interest Rate"],

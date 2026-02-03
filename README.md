@@ -1,21 +1,28 @@
 # WorkProof
 
-WorkProof is a complete stand-alone desktop application designed to monitor data entry accuracy in real-time. It validates user input against reference data, monitors screen content for session logging, and generates detailed performance reports.
+WorkProof is a complete stand-alone desktop application designed to compare OCR-extracted data with web-scraped reference data. It automatically validates data accuracy by comparing two automated sources, providing real-time visual feedback and detailed performance reports.
 
 ## Features
 
--   **Live Validation**: Real-time accuracy calculation using Levenshtein distance.
--   **Mistake Detection**: Highlights and counts insertions, deletions, and substitutions.
--   **Two-Panel Interface**: Source panel (left) and entry panel (right) for efficient work tracking.
--   **Session Monitoring**: Automatic screen capture at session start.
--   **Local Storage**: All history is stored locally in MongoDB for privacy and offline use.
--   **PDF Reports**: Generate detailed accuracy reports including time spent and mismatch logs.
+-   **Web Scraping**: Automatically extract reference data from websites using multiple HTML parsing strategies
+-   **OCR Extraction**: Extract text from images using Tesseract OCR
+-   **Automated Comparison**: Compare OCR data vs Web data with color-coded visual feedback
+-   **Accuracy Calculation**: Real-time accuracy metrics based on field-by-field comparison
+-   **Comparison Table**: Side-by-side view of OCR values vs Web values
+-   **Color-Coded Feedback**: 
+    - 🟢 Green: Values match
+    - 🔴 Red: Values mismatch
+    - 🟡 Yellow: Partial data (only one source has value)
+-   **Session Monitoring**: Automatic screen capture and time tracking
+-   **Local Storage**: All history stored locally in MongoDB for privacy
+-   **PDF Reports**: Generate detailed comparison reports with accuracy metrics
 
 ## Tech Stack
 
 -   **UI**: PySide6
+-   **Web Scraping**: requests, BeautifulSoup4, lxml
 -   **Screen Capture**: mss, Pillow
--   **OCR**: pytesseract (Optional)
+-   **OCR**: pytesseract
 -   **Text Logic**: difflib, python-Levenshtein
 -   **Reporting**: reportlab
 -   **Database**: MongoDB
@@ -24,7 +31,7 @@ WorkProof is a complete stand-alone desktop application designed to monitor data
 
 -   **Python 3.8+**
 -   **MongoDB**: Must be installed and running on `localhost:27017`.
--   **Tesseract OCR**: (Optional) Required if OCR features are enabled.
+-   **Tesseract OCR**: Required for OCR extraction from images.
 
 ## Setup Instructions
 
@@ -56,26 +63,33 @@ WorkProof is a complete stand-alone desktop application designed to monitor data
 
 ## Usage
 
-1.  **Load Reference**: Click "Load Reference Data" and select a `.txt` or `.csv` file.
-2.  **Start Session**: Click "Start Session" to begin monitoring.
-3.  **Data Entry**: Type the reference text into the right panel.
-4.  **Monitor Stats**: Observe real-time accuracy and error counts in the status bar.
-5.  **Stop & Report**: Click "Stop Session" to save data, and "Generate Report" to create a PDF summary.
+1.  **Load Image**: Click "📁 Load Image" and select an image file (PNG, JPG, JPEG) containing data
+2.  **OCR Extraction**: Application automatically extracts text using Tesseract OCR
+3.  **Enter Website URL**: Type the URL of the website containing reference data
+4.  **Scrape Website**: Click "🌐 Scrape Website" to extract data from the website
+5.  **Review Comparison**: Check the comparison table for color-coded matches/mismatches
+6.  **Start Session**: Click "▶ Start Comparison" to begin tracking the session
+7.  **Monitor Stats**: Observe real-time accuracy and mismatch counts in the status bar
+8.  **Stop & Report**: Click "⏹ Stop Session" to save data, and "📄 Generate Report" to create a PDF summary
 
 ## Project Structure
 
 ```text
 WorkProof_Basic/
 ├── engine/
-│   ├── monitor.py      # Screen capture logic
-│   └── validator.py    # Text comparison engine
+│   ├── monitor.py          # Screen capture logic
+│   ├── validator.py        # Text comparison engine
+│   ├── field_validator.py  # Field-level validation
+│   ├── business_rules.py   # Business logic validation
+│   └── web_scraper.py      # Web scraping engine
 ├── storage/
-│   └── db_manager.py   # MongoDB integration
+│   └── db_manager.py       # MongoDB integration
 ├── reports/
 │   └── report_generator.py # PDF generation logic
 ├── ui/
-│   └── main_window.py  # GUI implementation
-├── main.py             # Application entry point
-├── requirements.txt    # Dependency list
-└── README.md           # Documentation
+│   ├── main_window.py      # GUI implementation
+│   └── styles.py           # UI styling
+├── main.py                 # Application entry point
+├── requirements.txt        # Dependency list
+└── README.md               # Documentation
 ```
