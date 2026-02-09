@@ -46,10 +46,11 @@ def _parse_ocr_text(text: str) -> Dict[str, str]:
             "Full Name": "Full Name", "Gender": "Gender", "DOB": "DOB", 
             "Address 1": "Address 1", "Address 2": "Address 2", "City": "City", 
             "State": "State", "Postal": "Postal", "Country": "Country", 
-            "Email": "Email", "Contact": "Contact", "SSN": None
+            "Email": "Email", "Contact": "Contact", "SSN": "SSN"
         },
         "Account": {
             "Customer ID": "Customer ID", "A/c Type": "A/C Type", "A/c Name": "A/c Name",
+            "A/c Number": "A/c Number",
             "IBAN": "IBAN", "BIC": "BIC", "BTC Address": "BTC Address", 
             "ETH Address": "ETH Address", "LTC Address": "LTC Address", 
             "CC_No": "CC_No", "Last Txn Amount": "Last Txn Amount", "Last Txn Date": "Last Txn Date"

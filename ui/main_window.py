@@ -53,10 +53,10 @@ class WorkProofApp(QMainWindow):
         self.fields = [
             # 1. Personal Information
             "Full Name", "Gender", "DOB", "Address 1", "Address 2", 
-            "City", "State", "Postal", "Country", "Email", "Contact",
+            "City", "State", "Postal", "Country", "Email", "Contact", "SSN",
 
             # 2. Account Information
-            "Customer ID", "A/C Type", "A/c Name", "IBAN", "BIC", 
+            "Customer ID", "A/C Type", "A/c Name", "A/c Number", "IBAN", "BIC", 
             "BTC Address", "ETH Address", "LTC Address", "CC_No", 
             "Last Txn Amount", "Last Txn Date",
 
@@ -358,10 +358,11 @@ class WorkProofApp(QMainWindow):
                 "Full Name": "Full Name", "Gender": "Gender", "DOB": "DOB", 
                 "Address 1": "Address 1", "Address 2": "Address 2", "City": "City", 
                 "State": "State", "Postal": "Postal", "Country": "Country", 
-                "Email": "Email", "Contact": "Contact", "SSN": None # Ignore SSN
+                "Email": "Email", "Contact": "Contact", "SSN": "SSN" # Enable SSN
             },
             "Account": {
                 "Customer ID": "Customer ID", "A/c Type": "A/C Type", "A/c Name": "A/c Name",
+                "A/c Number": "A/c Number",
                 "IBAN": "IBAN", "BIC": "BIC", "BTC Address": "BTC Address", 
                 "ETH Address": "ETH Address", "LTC Address": "LTC Address", 
                 "CC_No": "CC_No", "Last Txn Amount": "Last Txn Amount", "Last Txn Date": "Last Txn Date"
