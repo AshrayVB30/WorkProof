@@ -8,6 +8,8 @@ services:
       - "27017:27017"
     volumes:
       - mongodb_data:/data/db
+    networks:
+      - workproof_network
 
   app:
     build: .
@@ -15,9 +17,20 @@ services:
     depends_on:
       - mongodb
     environment:
-      - MONGODB_URI=mongodb://mongodb:27017
-    # Use host network for GUI access or keep as is for headless testing
-    # network_mode: host 
+      - MONGO_URI=mongodb://mongodb:27017/
+    ports:
+      - "6080:6080" # NoVNC Web UI
+    volumes:
+      - ./screenshots:/app/screenshots
+      - ./reports:/app/reports
+      - ./storage:/app/storage
+    networks:
+      - workproof_network
+    restart: unless-stopped
+
+networks:
+  workproof_network:
+    driver: bridge
 
 volumes:
   mongodb_data:

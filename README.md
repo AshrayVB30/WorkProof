@@ -113,31 +113,30 @@ WorkProof is a complete stand-alone desktop application designed to compare OCR-
     python main.py
     ```
 
-### Docker Setup
+### Docker Setup (Browser-based Access)
+
+The easiest way to run the application with all dependencies (including MongoDB and Tesseract) is using Docker Compose. This setup allows you to access the GUI directly through your web browser.
 
 1.  **Clone the Repository**:
-
     ```bash
     git clone https://github.com/AshrayVB30/WorkProof.git
     cd WorkProof
     ```
 
-2.  **Build Docker Image**:
-
+2.  **Start the Environment**:
     ```bash
-    docker build -t workproof:latest .
+    docker-compose up -d --build
     ```
 
-3.  **Run Container**:
+3.  **Access the Application**:
+    Open your web browser and go to:
+    [http://localhost:6080/vnc.html](http://localhost:6080/vnc.html)
 
-    ```bash
-    docker run -it --rm \
-      -e DISPLAY=$DISPLAY \
-      -v /tmp/.X11-unix:/tmp/.X11-unix \
-      workproof:latest
-    ```
-
-    **Note**: Docker setup is primarily for testing. The GUI application works best when run locally due to display requirements.
+4.  **How it works**:
+    - The application runs inside a headless container using a virtual display (Xvfb).
+    - A VNC server exports this display.
+    - NoVNC provides a web interface to the VNC server.
+    - MongoDB data, screenshots, and reports are persisted in your local directory.
 
 ## 📖 Usage
 
