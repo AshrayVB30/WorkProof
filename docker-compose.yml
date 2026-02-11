@@ -1,0 +1,32 @@
+services:
+  mongodb:
+    image: mongo:latest
+    container_name: workproof-mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+    networks:
+      - workproof-network
+
+  workproof-app:
+    build: .
+    container_name: workproof-app
+    depends_on:
+      - mongodb
+    environment:
+      - MONGO_URI=mongodb://mongodb:27017/
+      - DISPLAY=${DISPLAY:-host.docker.internal:0}
+    volumes:
+      - ./storage:/app/storage
+      - ./reports:/app/reports
+      - ./screenshots:/app/screenshots
+    networks:
+      - workproof-network
+
+networks:
+  workproof-network:
+    driver: bridge
+
+volumes:
+  mongodb_data:
