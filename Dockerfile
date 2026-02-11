@@ -1,13 +1,10 @@
 FROM python:3.12-slim
 
-# Prevent interactive prompts during package installation
+# Prevent interactive prompts
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install system dependencies for:
-# 1. Tesseract OCR
-# 2. Qt/PySide6 (GUI)
-# 3. Virtual Display (Xvfb, VNC, Fluxbox, NoVNC)
-RUN apt-get update && apt-get install -y \
+# Install all system dependencies in one layer to optimize
+RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr \
     libtesseract-dev \
     libgl1 \
@@ -26,26 +23,26 @@ RUN apt-get update && apt-get install -y \
     websockify \
     net-tools \
     procps \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Fix NoVNC location (Debian/Ubuntu specific)
+# Setup NoVNC
 RUN ln -s /usr/share/novnc/vnc.html /usr/share/novnc/index.html
 
 WORKDIR /app
 
-# Install Python dependencies
+# Copy and install Python requirements first (better caching)
 COPY requirements.txt .
-RUN pip install --upgrade pip
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
 
-# Copy project files
+# Copy the rest of the application
 COPY . .
 
-# Ensure entrypoint is executable
+# Final environment tweaks
 RUN chmod +x /app/docker-entrypoint.sh
+ENV PYTHONUNBUFFERED=1
 
-# Expose NoVNC port
 EXPOSE 6080
 
-# Use the entrypoint script to start the virtual display and the app
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
