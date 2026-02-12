@@ -11,7 +11,7 @@ class ScreenMonitor:
     """
     Captures screenshots of the screen for session logging.
     """
-    def __init__(self, output_dir="screenshots"):
+    def __init__(self, output_dir="backend/screenshots"):
         self.output_dir = output_dir
         if not os.path.exists(self.output_dir):
             os.makedirs(self.output_dir)

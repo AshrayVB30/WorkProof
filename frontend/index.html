@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WorkProof | Data Validation Dashboard</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+    <div class="app-container">
+        <aside class="sidebar">
+            <div class="logo-container">
+                <div class="logo-icon">WP</div>
+                <h1 class="logo-text">WorkProof</h1>
+            </div>
+            <nav class="sidebar-nav">
+                <a href="#personal" class="nav-item active">
+                    <span class="nav-icon">👤</span>
+                    <span class="nav-label">Personal Info</span>
+                </a>
+                <a href="#account" class="nav-item">
+                    <span class="nav-icon">💳</span>
+                    <span class="nav-label">Account Info</span>
+                </a>
+                <a href="#investment" class="nav-item">
+                    <span class="nav-icon">📈</span>
+                    <span class="nav-label">Investment</span>
+                </a>
+                <a href="#assets" class="nav-item">
+                    <span class="nav-icon">🏘️</span>
+                    <span class="nav-label">Assets & Purchase</span>
+                </a>
+                <a href="#legal" class="nav-item">
+                    <span class="nav-icon">⚖️</span>
+                    <span class="nav-label">Legal Advisors</span>
+                </a>
+            </nav>
+            <div class="sidebar-footer">
+                <button id="btn-scrape" class="btn-primary">🌐 Get Data</button>
+            </div>
+        </aside>
+
+        <main class="main-content">
+            <header class="top-header">
+                <div class="search-bar">
+                    <input type="text" id="url-input" placeholder="Enter website URL to scrape reference data...">
+                </div>
+                <div class="header-actions">
+                    <div class="stats-badge accuracy">
+                        Accuracy: <span id="accuracy-value">0%</span>
+                    </div>
+                    <div class="stats-badge errors">
+                        Mismatches: <span id="error-count">0</span>
+                    </div>
+                    <button class="btn-action">📄 Report</button>
+                </div>
+            </header>
+
+            <div class="content-body">
+                <!-- 1. Personal Information -->
+                <section id="personal" class="data-section">
+                    <div class="section-header">
+                        <h2>1. Personal Information</h2>
+                        <span class="field-count">12 Fields</span>
+                    </div>
+                    <div class="fields-grid">
+                        <div class="field-card" data-field="Full Name"><label>Full Name</label>
+                            <div class="field-value empty" contenteditable="false"></div>
+                        </div>
+                        <div class="field-card" data-field="Gender"><label>Gender</label>
+                            <div class="field-value empty" contenteditable="false"></div>
+                        </div>
+                        <div class="field-card" data-field="DOB"><label>DOB</label>
+                            <div class="field-value empty" contenteditable="false"></div>
+                        </div>
+                        <div class="field-card" data-field="SSN"><label>SSN</label>
+                            <div class="field-value empty" contenteditable="false"></div>
+                        </div>
+                        <div class="field-card" data-field="Address 1"><label>Address 1</label>
+                            <div class="field-value empty" contenteditable="false"></div>
+                        </div>
+                        <div class="field-card" data-field="Address 2"><label>Address 2</label>
+                            <div class="field-value empty" contenteditable="false"></div>
+                        </div>
+                        <div class="field-card" data-field="City"><label>City</label>
+                            <div class="field-value empty" contenteditable="false"></div>
+                        </div>
+                        <div class="field-card" data-field="State"><label>State</label>
+                            <div class="field-value empty" contenteditable="false"></div>
+                        </div>
+                        <div class="field-card" data-field="Postal"><label>Postal</label>
+                            <div class="field-value empty" contenteditable="false"></div>
+                        </div>
+                        <div class="field-card" data-field="Country"><label>Country</label>
+                            <div class="field-value empty" contenteditable="false"></div>
+                        </div>
+                        <div class="field-card" data-field="Email"><label>Email</label>
+                            <div class="field-value empty" contenteditable="false"></div>
+                        </div>
+                        <div class="field-card" data-field="Contact"><label>Contact</label>
+                            <div class="field-value empty" contenteditable="false"></div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- 2. Account Information -->
+                <section id="account" class="data-section">
+                    <div class="section-header">
+                        <h2>2. Account Information</h2>
+                        <span class="field-count">12 Fields</span>
+                    </div>
+                    <div class="fields-grid">
+                        <div class="field-card" data-field="Customer ID"><label>Customer ID</label>
+                            <div class="field-value empty" contenteditable="false"></div>
+                        </div>
+                        <div class="field-card" data-field="A/C Type"><label>A/C Type</label>
+                            <div class="field-value empty" contenteditable="false"></div>
+                        </div>
+                        <div class="field-card" data-field="A/C Name"><label>A/C Name</label>
+                            <div class="field-value empty" contenteditable="false"></div>
+                        </div>
+                        <div class="field-card" data-field="A/C Number"><label>A/C Number</label>
+                            <div class="field-value empty" contenteditable="false"></div>
+                        </div>
+                        <div class="field-card" data-field="IBAN"><label>IBAN</label>
+                            <div class="field-value empty" contenteditable="false"></div>
+                        </div>
+                        <div class="field-card" data-field="BIC"><label>BIC</label>
+                            <div class="field-value empty" contenteditable="false"></div>
+                        </div>
+                        <div class="field-card" data-field="BTC Address"><label>BTC Address</label>
+                            <div class="field-value empty" contenteditable="false"></div>
+                        </div>
+                        <div class="field-card" data-field="ETH Address"><label>ETH Address</label>
+                            <div class="field-value empty" contenteditable="false"></div>
+                        </div>
+                        <div class="field-card" data-field="LTC Address"><label>LTC Address</label>
+                            <div class="field-value empty" contenteditable="false"></div>
+                        </div>
+                        <div class="field-card" data-field="CC No"><label>CC No</label>
+                            <div class="field-value empty" contenteditable="false"></div>
+                        </div>
+                        <div class="field-card" data-field="Last Txn Amount"><label>Last Txn Amount</label>
+                            <div class="field-value empty" contenteditable="false"></div>
+                        </div>
+                        <div class="field-card" data-field="Last Txn Date"><label>Last Txn Date</label>
+                            <div class="field-value empty" contenteditable="false"></div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- 3. Investment Information -->
+                <section id="investment" class="data-section">
+                    <div class="section-header">
+                        <h2>3. Investment Information</h2>
+                        <span class="field-count">10 Fields</span>
+                    </div>
+                    <div class="fields-grid">
+                        <div class="field-card" data-field="Company"><label>Company</label>
+                            <div class="field-value empty" contenteditable="false"></div>
+                        </div>
+                        <div class="field-card" data-field="BS"><label>BS</label>
+                            <div class="field-value empty" contenteditable="false"></div>
+                        </div>
+                        <div class="field-card" data-field="EIN"><label>EIN</label>
+                            <div class="field-value empty" contenteditable="false"></div>
+                        </div>
+                        <div class="field-card" data-field="Skill Description"><label>Skill Description</label>
+                            <div class="field-value empty" contenteditable="false"></div>
+                        </div>
+                        <div class="field-card" data-field="ISIN"><label>ISIN</label>
+                            <div class="field-value empty" contenteditable="false"></div>
+                        </div>
+                        <div class="field-card" data-field="Coupon"><label>Coupon</label>
+                            <div class="field-value empty" contenteditable="false"></div>
+                        </div>
+                        <div class="field-card" data-field="Invested Amount"><label>Invested Amount</label>
+                            <div class="field-value empty" contenteditable="false"></div>
+                        </div>
+                        <div class="field-card" data-field="Maturity Date"><label>Maturity Date</label>
+                            <div class="field-value empty" contenteditable="false"></div>
+                        </div>
+                        <div class="field-card" data-field="Bond Name"><label>Bond Name</label>
+                            <div class="field-value empty" contenteditable="false"></div>
+                        </div>
+                        <div class="field-card" data-field="Bond Class"><label>Bond Class</label>
+                            <div class="field-value empty" contenteditable="false"></div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- 4. Assets & Last Purchase -->
+                <section id="assets" class="data-section">
+                    <div class="section-header">
+                        <h2>4. Assets & Last Purchase Information</h2>
+                        <span class="field-count">14 Fields</span>
+                    </div>
+
+                    <div class="sub-section">
+                        <h3>Last Purchase Detail</h3>
+                        <div class="fields-grid">
+                            <div class="field-card" data-field="Department"><label>Department</label>
+                                <div class="field-value empty" contenteditable="false"></div>
+                            </div>
+                            <div class="field-card" data-field="EAN 13"><label>EAN 13</label>
+                                <div class="field-value empty" contenteditable="false"></div>
+                            </div>
+                            <div class="field-card" data-field="Product Name"><label>Product Name</label>
+                                <div class="field-value empty" contenteditable="false"></div>
+                            </div>
+                            <div class="field-card" data-field="Unit Price"><label>Unit Price</label>
+                                <div class="field-value empty" contenteditable="false"></div>
+                            </div>
+                            <div class="field-card" data-field="User"><label>User</label>
+                                <div class="field-value empty" contenteditable="false"></div>
+                            </div>
+                            <div class="field-card" data-field="Purchase Token"><label>Purchase Token</label>
+                                <div class="field-value empty" contenteditable="false"></div>
+                            </div>
+                            <div class="field-card" data-field="Buying IPv4"><label>Buying IPv4</label>
+                                <div class="field-value empty" contenteditable="false"></div>
+                            </div>
+                            <div class="field-card" data-field="Buying IPv6"><label>Buying IPv6</label>
+                                <div class="field-value empty" contenteditable="false"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="sub-section">
+                        <h3>Vehicle Detail</h3>
+                        <div class="fields-grid">
+                            <div class="field-card" data-field="Type"><label>Type</label>
+                                <div class="field-value empty" contenteditable="false"></div>
+                            </div>
+                            <div class="field-card" data-field="Model"><label>Model</label>
+                                <div class="field-value empty" contenteditable="false"></div>
+                            </div>
+                            <div class="field-card" data-field="Manufacture"><label>Manufacture</label>
+                                <div class="field-value empty" contenteditable="false"></div>
+                            </div>
+                            <div class="field-card" data-field="VIN"><label>VIN</label>
+                                <div class="field-value empty" contenteditable="false"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="sub-section">
+                        <h3>Insurance Detail</h3>
+                        <div class="fields-grid">
+                            <div class="field-card" data-field="Beneficiary Identifier ID"><label>Beneficiary Identifier
+                                    ID</label>
+                                <div class="field-value empty" contenteditable="false"></div>
+                            </div>
+                            <div class="field-card" data-field="INS No"><label>INS No</label>
+                                <div class="field-value empty" contenteditable="false"></div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- 5. Legal Advisors -->
+                <section id="legal" class="data-section">
+                    <div class="section-header">
+                        <h2>5. Legal Advisors</h2>
+                        <span class="field-count">16 Fields</span>
+                    </div>
+
+                    <div class="sub-section">
+                        <h3>Account Advisor</h3>
+                        <div class="fields-grid">
+                            <div class="field-card" data-field="Account Advisor - Advisor ID"><label>Advisor ID</label>
+                                <div class="field-value empty" contenteditable="false"></div>
+                            </div>
+                            <div class="field-card" data-field="Account Advisor - Name"><label>Name</label>
+                                <div class="field-value empty" contenteditable="false"></div>
+                            </div>
+                            <div class="field-card" data-field="Account Advisor - Contact"><label>Contact</label>
+                                <div class="field-value empty" contenteditable="false"></div>
+                            </div>
+                            <div class="field-card" data-field="Account Advisor - Address"><label>Address</label>
+                                <div class="field-value empty" contenteditable="false"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="sub-section">
+                        <h3>Assets Manager</h3>
+                        <div class="fields-grid">
+                            <div class="field-card" data-field="Assets Manager - Advisor ID"><label>Advisor ID</label>
+                                <div class="field-value empty" contenteditable="false"></div>
+                            </div>
+                            <div class="field-card" data-field="Assets Manager - Name"><label>Name</label>
+                                <div class="field-value empty" contenteditable="false"></div>
+                            </div>
+                            <div class="field-card" data-field="Assets Manager - Contact"><label>Contact</label>
+                                <div class="field-value empty" contenteditable="false"></div>
+                            </div>
+                            <div class="field-card" data-field="Assets Manager - Address"><label>Address</label>
+                                <div class="field-value empty" contenteditable="false"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="sub-section">
+                        <h3>Investment Advisor</h3>
+                        <div class="fields-grid">
+                            <div class="field-card" data-field="Investment Advisor - Manager ID"><label>Manager
+                                    ID</label>
+                                <div class="field-value empty" contenteditable="false"></div>
+                            </div>
+                            <div class="field-card" data-field="Investment Advisor - Name"><label>Name</label>
+                                <div class="field-value empty" contenteditable="false"></div>
+                            </div>
+                            <div class="field-card" data-field="Investment Advisor - Contact"><label>Contact</label>
+                                <div class="field-value empty" contenteditable="false"></div>
+                            </div>
+                            <div class="field-card" data-field="Investment Advisor - Address"><label>Address</label>
+                                <div class="field-value empty" contenteditable="false"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="sub-section">
+                        <h3>Insurance Manager</h3>
+                        <div class="fields-grid">
+                            <div class="field-card" data-field="Insurance Manager - Manager ID"><label>Manager
+                                    ID</label>
+                                <div class="field-value empty" contenteditable="false"></div>
+                            </div>
+                            <div class="field-card" data-field="Insurance Manager - Name"><label>Name</label>
+                                <div class="field-value empty" contenteditable="false"></div>
+                            </div>
+                            <div class="field-card" data-field="Insurance Manager - Contact"><label>Contact</label>
+                                <div class="field-value empty" contenteditable="false"></div>
+                            </div>
+                            <div class="field-card" data-field="Insurance Manager - Address"><label>Address</label>
+                                <div class="field-value empty" contenteditable="false"></div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+            </div>
+        </main>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+
+</html>

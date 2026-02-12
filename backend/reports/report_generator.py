@@ -8,7 +8,7 @@ class ReportGenerator:
     """
     Generates audit-ready PDF reports for user sessions.
     """
-    def __init__(self, output_dir="reports"):
+    def __init__(self, output_dir="backend/reports"):
         self.output_dir = output_dir
         if not os.path.exists(self.output_dir):
             os.makedirs(self.output_dir)
