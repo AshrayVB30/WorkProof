@@ -11,6 +11,7 @@ from fastapi import FastAPI, HTTPException
 import uvicorn
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+import re
 
 # Add current directory to path for backend imports
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -35,6 +36,36 @@ if os.path.exists(tesseract_path):
 
 class ScrapeRequest(BaseModel):
     url: str
+
+def clean_ocr_field(value: str) -> str:
+    """Clean common OCR noise and trailing labels from values"""
+    if not value or not isinstance(value, str):
+        return value
+    
+    # Noise suffixes/lines to strip or ignore
+    noise_labels = [
+        "CC_No", "CC No", "Skill Description", "Sk1LL Description", "SkLL Description",
+        "Last Purchase Detail", "Vehicle Detail", "Insurance Detail",
+        "Beneficiary Identifier ID", "Identifier ID", "Beneficiary",
+        "Purchase Detail", "Detail", "Last Purchase", "CC_NO", "Sk1LL", "SkLL",
+        "Ean13", "Eanl3", "EAN 13"
+    ]
+    
+    cleaned = value.strip()
+    
+    # 1. Remove prefix noise like "r " or "é "
+    # specifically helps with "Manufacture": "r ford" -> "ford"
+    cleaned = re.sub(r'^[a-zA-Z0-9©é]\s+', '', cleaned)
+    
+    # 2. Strip common noise labels from the end or middle
+    for noise in noise_labels:
+        pattern = re.compile(re.escape(noise), re.IGNORECASE)
+        match = list(pattern.finditer(cleaned))
+        if match:
+            cleaned = cleaned[:match[0].start()].strip()
+            
+    # 3. Final trim and strip leading special characters
+    return cleaned.strip().lstrip(':. ©é').strip()
 
 def parse_ocr_text(text: str) -> Dict[str, str]:
     """
@@ -81,20 +112,25 @@ def parse_ocr_text(text: str) -> Dict[str, str]:
             "Customer ID": "Customer ID", "A/C Type": "A/C Type", "A/C Name": "A/C Name",
             "A/C Number": "A/C Number", "IBAN": "IBAN", "BIC": "BIC", 
             "BTC Address": "BTC Address", "ETH Address": "ETH Address", 
-            "LTC Address": "LTC Address", "CC No": "CC No", 
+            "LTC Address": "LTC Address", "CC No": "CC No", "CC_No": "CC No",
             "Last Txn Amount": "Last Txn Amount", "Last Txn Date": "Last Txn Date"
         },
         "Investment": {
-            "Company": "Company", "BS": "BS", "EIN": "EIN", "Skill Description": "Skill Description",
+            "Company": "Company", "BS": "BS", "EIN": "EIN", 
+            "Skill Description": "Skill Description", "Sk1LL Description": "Skill Description", 
+            "Skll Description": "Skill Description", "Skll": "Skill Description",
             "ISIN": "ISIN", "Coupon": "Coupon", "Invested Amount": "Invested Amount", 
             "Maturity Date": "Maturity Date", "Bond Name": "Bond Name", "Bond Class": "Bond Class"
         },
         "Assets": {
-            "Department": "Department", "EAN 13": "EAN 13", "Product Name": "Product Name", 
-            "Unit Price": "Unit Price", "User": "User", "Purchase Token": "Purchase Token",
-            "Buying IPv4": "Buying IPv4", "Buying IPv6": "Buying IPv6",
-            "Type": "Type", "Model": "Model", "Manufacture": "Manufacture", "VIN": "VIN",
-            "Beneficiary Identifier ID": "Beneficiary Identifier ID", "INS No": "INS No"
+            "Department": "Department", "EAN 13": "EAN 13", "Ean13": "EAN 13", "Eanl3": "EAN 13", 
+            "Product Name": "Product Name", "Unit Price": "Unit Price", "User": "User", 
+            "Purchase Token": "Purchase Token", "Buying IPv4": "Buying IPv4", "Buying IPv6": "Buying IPv6",
+            "Type": "Type", "Model": "Model", 
+            "Manufacture": "Manufacture", "Manufacturer": "Manufacture", 
+            "VIN": "VIN", "Beneficiary": "Beneficiary Identifier ID",
+            "Beneficiary Identifier ID": "Beneficiary Identifier ID", 
+            "INS No": "INS No", "INS No.": "INS No"
         },
         "Legal": {
             "Advisor ID": "Advisor ID", "Manager ID": "Manager ID", 
@@ -102,8 +138,24 @@ def parse_ocr_text(text: str) -> Dict[str, str]:
         }
     }
 
+    # Pre-process lines to split merged OCR fields (e.g., EIN ending and Skll starting on same line)
+    splitters = ["Skill Description", "Sk1LL Description", "Skll Description", "EAN 13", "Buying IPv4", "Buying IPv6", "LTC Address"]
+    processed_lines = []
     for line in lines:
-        line = line.strip()
+        if not line.strip(): continue
+        merged = False
+        for s in splitters:
+            # If splitter is in line but NOT at the start
+            idx = line.lower().find(s.lower())
+            if idx > 2: 
+                processed_lines.append(line[:idx].strip())
+                processed_lines.append(line[idx:].strip())
+                merged = True
+                break
+        if not merged:
+            processed_lines.append(line.strip())
+    
+    for line in processed_lines:
         if not line: continue
         
         lower_line = line.lower()
@@ -158,8 +210,25 @@ def parse_ocr_text(text: str) -> Dict[str, str]:
                         break
         
         if not matched_field and last_field_key:
-            if len(line) > 1 and "---" not in line:
+            # Don't append if the line looks like a known field marker, common noise, or section header
+            is_noise = any(line.lower().startswith(n.lower()) for n in [
+                "Last Purchase Detail", "Vehicle Detail", "Insurance Detail", 
+                "Beneficiary", "Detail", "Insurance", "Identifier"
+            ])
+            
+            # Check if it starts with ANY known field name from ANY section
+            is_potential_key = False
+            for section in field_aliases.values():
+                if any(line.lower().startswith(k.lower()) for k in section.keys()):
+                    is_potential_key = True
+                    break
+            
+            if not is_noise and not is_potential_key and len(line) > 1 and "---" not in line:
                 data[last_field_key] += " " + line
+
+    # Final cleanup pass on all extracted values
+    for key in data:
+        data[key] = clean_ocr_field(data[key])
 
     return data
 

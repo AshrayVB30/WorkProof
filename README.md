@@ -9,20 +9,21 @@ WorkProof is a modular data validation platform designed to compare scraped or O
 ## ✨ Features
 
 - **Web Dashboard**: A clean, document-style interface using Times New Roman for a professional feel.
-- **Intelligent Scraping & OCR**: Automatically detects if a URL is a webpage or an image. It uses BeautifulSoup for HTML scraping and Tesseract OCR for images.
+- **Enhanced OCR Engine**: Advanced image preprocessing with noise reduction, contrast enhancement, adaptive thresholding, and multi-pass recognition for superior text extraction accuracy.
+- **Intelligent Scraping**: Automatically detects if a URL is a webpage or an image. It uses BeautifulSoup for HTML scraping and Tesseract OCR with advanced preprocessing for images.
 - **64-Field Validation**: Automatically populates and validates 64 specific fields across Personal, Account, Investment, Asset, and Legal Advisor categories.
 - **Plain Text Security**: Multi-layer protection against formatting injections; pasting text into fields automatically strips all styles.
 - **Read-Only Reference**: Scraped data is presented in a non-editable but selectable format, ideal for referencing and copying.
 - **Color-Coded Comparison**: Precise mapping of extracted data with visual match/mismatch indicators.
-- **PDF Reports**: Generate detailed audit reports from validation sessions.
+- **Stateless Operation**: No data storage - purely extracts and displays data in real-time.
 
 ## 🛠️ Tech Stack
 
 - **Backend**: FastAPI (Python), Uvicorn
 - **Frontend**: HTML5, Vanilla CSS3, Javascript (ES6+)
 - **Scraping**: Requests, BeautifulSoup4, Lxml
-- **OCR Engine**: Tesseract OCR (pytesseract)
-- **Database**: MongoDB (with SQLite fallback)
+- **OCR Engine**: Tesseract OCR (pytesseract) with OpenCV preprocessing
+- **Image Processing**: OpenCV, NumPy, Pillow
 - **Design Reference**: Document-style, Times New Roman typography
 
 ## 🚀 Installation
@@ -31,7 +32,6 @@ WorkProof is a modular data validation platform designed to compare scraped or O
 - **Python 3.8+**
 - **Tesseract OCR**: Required for image-based URLs.
   - Windows: Install to `C:\Program Files\Tesseract-OCR\tesseract.exe`
-- **MongoDB** (Optional): Falls back to SQLite if not found.
 
 ### 2. Setup
 ```bash
@@ -63,8 +63,6 @@ After starting, open your browser and navigate to `http://localhost:8000`.
 WorkProof/
 ├── backend/
 │   ├── engine/             # Web Scraping & OCR Logic
-│   ├── storage/            # Multi-DB Management
-│   ├── reports/            # PDF Generation
 │   └── screenshots/        # Session Captures
 ├── frontend/
 │   ├── index.html          # Main Dashboard Structure
