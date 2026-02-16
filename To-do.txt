@@ -1,0 +1,16 @@
+1. Refresh the page when the user enters new url
+2. Improve the text accuracy of the ocr
+3. When there is * its giving #, ~  -> in a/c number and cc_no
+4. 0 -> @ , * -> HK, empty field -> r, l
+5. when IPv6 is empty its giving Vichle 
+6. when we copying the text from the web page its copying complete box text 
+7. when enter the url after entering user will click on enter button it should get the data 
+8. when user enter the url and click on enter button it should get the data 
+9. deploy in docker 
+10. remove database connetivity we are not using it 
+11. 
+
+6. New feature -> Count the number of links and keep the count in web page of the unique link 
+
+tomm -> 1. rakshita 
+wed -> 1. poorna, inchara 

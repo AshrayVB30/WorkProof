@@ -92,7 +92,12 @@ class WebScraper:
             data.update(dl_data)
             logger.info(f"Extracted {len(dl_data)} fields from definition lists")
             
-            logger.info(f"Total fields extracted: {len(data)}")
+            # Count unique links
+            all_links = [a.get('href') for a in soup.find_all('a') if a.get('href')]
+            unique_links = len(set(all_links))
+            data["__metadata__"] = {"unique_links": unique_links}
+            
+            logger.info(f"Total fields extracted: {len(data)-1}, Unique links: {unique_links}")
             return data
             
         except requests.Timeout:

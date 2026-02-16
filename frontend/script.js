@@ -49,6 +49,19 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
+        // Clear previous data for a "fresh" feel
+        const fieldValues = document.querySelectorAll('.field-value');
+        fieldValues.forEach(div => {
+            div.innerText = '';
+            div.classList.add('empty');
+        });
+
+        const cards = document.querySelectorAll('.field-card');
+        cards.forEach(c => c.classList.remove('match', 'mismatch'));
+
+        accuracyVal.innerText = '0%';
+        errorCount.innerText = '0';
+
         scrapeBtn.disabled = true;
         const isImageUrl = /\.(jpg|jpeg|png|webp|gif|bmp)$/i.test(url) || url.includes('img') || url.includes('image');
         scrapeBtn.innerHTML = isImageUrl ? '<span>👁️ Running OCR...</span>' : '<span>⚡ Scraping...</span>';
@@ -65,6 +78,12 @@ document.addEventListener('DOMContentLoaded', () => {
             if (result.status === 'success') {
                 updateFields(result.data);
                 calculateStats();
+
+                // Update Link Counter badge
+                if (result.metadata && result.metadata.unique_links !== undefined) {
+                    updateLinkCounter(result.metadata.unique_links);
+                }
+
                 scrapeBtn.innerHTML = result.method === 'ocr' ? '👁️ OCR Done' : '✅ Done';
             } else {
                 throw new Error(result.detail || 'Unknown error');
@@ -85,6 +104,25 @@ document.addEventListener('DOMContentLoaded', () => {
             }, 2000);
         }
     });
+
+    // Handle Enter Key in input
+    urlInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault(); // Prevent potential form submission or double firing
+            scrapeBtn.click();
+        }
+    });
+
+    function updateLinkCounter(count) {
+        let badge = document.getElementById('link-counter');
+        if (!badge) {
+            badge = document.createElement('div');
+            badge.id = 'link-counter';
+            badge.className = 'stats-badge links';
+            document.querySelector('.header-actions').prepend(badge);
+        }
+        badge.innerHTML = `🔗 Unique Links: <span>${count}</span>`;
+    }
 
     function updateFields(data) {
         const fieldCards = document.querySelectorAll('.field-card');
