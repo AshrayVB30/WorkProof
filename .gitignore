@@ -32,7 +32,6 @@ logs/
 
 # Application specific
 screenshots/
-storage/
 reports/*.pdf
 
 # MongoDB data (if running locally)
