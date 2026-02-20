@@ -75,16 +75,27 @@ def clean_ocr_field(value: str, key: str = "") -> str:
 
     # 1. Handle common OCR character misidentifications
     # Masked fields: HK, #, ~, ¥ -> *
-    if any(k in cleaned for k in ["HK", "#", "~", "¥"]):
-        cleaned = cleaned.replace("HK", "*").replace("#", "*").replace("~", "*").replace("¥", "*")
+    if any(k in cleaned for k in ["HK", "#", "~", "¥", "HHH"]):
+        cleaned = cleaned.replace("HK", "*").replace("#", "*").replace("~", "*").replace("¥", "*").replace("HHH", "***")
+    
+    # Fix £ misread as 'f' in IPv6 addresses (Tesseract OCR artifact)
+    if "IPv6" in key and "£" in cleaned:
+        cleaned = cleaned.replace("£", "f")
+
     
     # Numeric and Date fields misreads
     if any(k in cleaned.lower() for k in ["fett", "ost", "l7", "i7"]):
         cleaned = cleaned.lower().replace("fett", "7.77").replace("ost", "17").replace("l7", "17").replace("i7", "17")
     
-    # Replace @ with 0 in potential numeric/date positions
-    if "@" in cleaned and "@" == cleaned[0] and "." not in cleaned:
-        cleaned = "0" + cleaned[1:]
+    # Replace @ with 0 in numeric/code fields (OCR reads 0 as @)
+    numeric_fields = [
+        "SSN", "Customer ID", "Postal", "Last Txn Amount", "Coupon",
+        "Invested Amount", "Unit Price", "A/C Number", "IBAN", "BIC",
+        "Customer ID", "EIN", "INS No", "Advisor ID", "Manager ID"
+    ]
+    is_numeric_field = any(k in key for k in numeric_fields)
+    if "@" in cleaned and (is_numeric_field or ("@" == cleaned[0] and "." not in cleaned)):
+        cleaned = cleaned.replace("@", "0")
     
     # 2. Alphanumeric Code Corrections
     # Determine if this field is likely a code/ID based on Key
@@ -102,15 +113,28 @@ def clean_ocr_field(value: str, key: str = "") -> str:
         # Only apply aggressive space removal if it is a known code field
         if is_code:
             # Prefer Numbers for codes that usually contain them
-            cleaned = cleaned.replace("O", "0").replace("Q", "0")
+            # NOTE: Do NOT replace Q→0 globally; Q is a valid letter in many IDs
+            cleaned = cleaned.replace("O", "0")
             # Specifically for ISINs which are often misread
             if any(p in cleaned for p in ["YTBYX", "WD2AC"]):
                  cleaned = cleaned.replace("1", "I").replace("5", "S")
             if "1FGSG" in cleaned: cleaned = cleaned.replace("1FGSG", "JFGSG")
+            # Fix common OCR misreads specific to Advisor/Manager ID fields
+            # Tesseract often reads 'J' as 'I' and '7' as 'T' in these IDs
+            if "Advisor ID" in key or "Manager ID" in key:
+                cleaned = cleaned.replace("I", "J").replace("T", "7")
             
             # Remove spaces (Common for OCR'd codes like IBANs or Addresses)
             if " " in cleaned:
                  cleaned = cleaned.replace(" ", "")
+
+    # Fix 9 misread as 'g' or 'o' in purely numeric fields (SSN, Postal, Customer ID, etc.)
+    purely_numeric_fields = ["SSN", "Customer ID", "Postal", "Last Txn Amount", "Coupon", "Invested Amount", "Unit Price"]
+    if any(k in key for k in purely_numeric_fields):
+        # Only replace if the value is mostly digits/dashes/dots (i.e., a numeric string)
+        stripped = re.sub(r'[\d\-\.\*]', '', cleaned)
+        if len(stripped) <= 2:  # At most 2 non-numeric chars (e.g. currency symbol)
+            cleaned = cleaned.replace("g", "9").replace("o", "0")
 
     # 4. Final trim and strip leading/trailing artifacts
     cleaned = cleaned.strip().lstrip(':. ©é').strip()
@@ -168,14 +192,14 @@ def parse_ocr_text(text: str) -> Dict[str, str]:
             "BTC Address": "BTC Address", "ETH Address": "ETH Address", 
             "LTC Address": "LTC Address", "CC No": "CC No", "CC_No": "CC No",
             "Last Txn Amount": "Last Txn Amount", "Last Txn Date": "Last Txn Date",
-            "Last Txn": "Last Txn Amount"
+            "Last Txn": "Last Txn Amount", "Amount": "Last Txn Amount"
         },
         "Investment": {
             "Company": "Company", "BS": "BS", "EIN": "EIN", 
             "Skill Description": "Skill Description", "Sk1LL Description": "Skill Description", 
-            "Skll Description": "Skill Description", "Skll": "Skill Description",
+            "Skll Description": "Skill Description", "Skll": "Skill Description", "Sk1LL": "Skill Description",
             "ISIN": "ISIN", "Coupon": "Coupon", "Invested Amount": "Invested Amount", 
-            "Invested": "Invested Amount", "Maturity Date": "Maturity Date", 
+            "Invested": "Invested Amount", "Amount": "Invested Amount", "Maturity Date": "Maturity Date", 
             "Bond Name": "Bond Name", "Bond Class": "Bond Class"
         },
         "Assets": {
@@ -198,7 +222,7 @@ def parse_ocr_text(text: str) -> Dict[str, str]:
     splitters = [
         "Skill Description", "Sk1LL Description", "Skll Description", 
         "EAN 13", "Buying IPv4", "Buying IPv6", "LTC Address", 
-        "Last Txn", "Last Txn Date", "Invested", "Txn", "Description"
+        "Last Txn", "Last Txn Date", "Invested", "Description"
     ]
     processed_lines = []
     for line in lines:

@@ -5,7 +5,7 @@ FROM python:3.12-slim
 WORKDIR /app
 
 # Install system dependencies for Tesseract and OpenCV (if needed)
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --fix-missing \
     tesseract-ocr \
     libtesseract-dev \
     libgl1 \

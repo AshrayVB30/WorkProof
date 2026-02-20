@@ -105,13 +105,19 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // Handle Enter Key in input
-    urlInput.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') {
-            e.preventDefault(); // Prevent potential form submission or double firing
-            scrapeBtn.click();
+    // Handle Enter Key in input - robust for all environments
+    function triggerScrape(e) {
+        if (e.key === 'Enter' || e.keyCode === 13) {
+            e.preventDefault();
+            e.stopPropagation();
+            if (!scrapeBtn.disabled) {
+                scrapeBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+            }
         }
-    });
+    }
+    urlInput.addEventListener('keydown', triggerScrape);
+    urlInput.addEventListener('keypress', triggerScrape);
+
 
     function updateLinkCounter(count) {
         let badge = document.getElementById('link-counter');
@@ -196,6 +202,53 @@ document.addEventListener('DOMContentLoaded', () => {
                 div.classList.add('empty');
             }
             calculateStats();
+        });
+    });
+
+    // Inject copy button into every field card
+    document.querySelectorAll('.field-card').forEach(card => {
+        const btn = document.createElement('button');
+        btn.className = 'copy-btn';
+        btn.title = 'Copy value';
+        btn.innerHTML = '&#x2398;'; // ⎘ copy symbol
+        card.appendChild(btn);
+    });
+
+    // Handle copy button clicks (delegated)
+    document.addEventListener('click', (e) => {
+        const btn = e.target.closest('.copy-btn');
+        if (!btn) return;
+        e.stopPropagation();
+
+        const card = btn.closest('.field-card');
+        const valueDiv = card.querySelector('.field-value');
+        const text = valueDiv ? valueDiv.innerText.trim() : '';
+
+        if (!text) return; // nothing to copy
+
+        navigator.clipboard.writeText(text).then(() => {
+            btn.innerHTML = '&#x2713;'; // ✓
+            btn.classList.add('copied');
+            setTimeout(() => {
+                btn.innerHTML = '&#x2398;';
+                btn.classList.remove('copied');
+            }, 1500);
+        }).catch(() => {
+            // Fallback for older browsers / non-HTTPS
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            ta.style.position = 'fixed';
+            ta.style.opacity = '0';
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            document.body.removeChild(ta);
+            btn.innerHTML = '&#x2713;';
+            btn.classList.add('copied');
+            setTimeout(() => {
+                btn.innerHTML = '&#x2398;';
+                btn.classList.remove('copied');
+            }, 1500);
         });
     });
 });
