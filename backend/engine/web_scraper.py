@@ -18,7 +18,7 @@ class WebScraper:
     Flexible web scraper that can extract field-value pairs from various HTML structures.
     """
     
-    def __init__(self, timeout: int = 10):
+    def __init__(self, timeout: int = 300, retries: int = 3):
         """
         Initialize the web scraper.
         
@@ -28,8 +28,21 @@ class WebScraper:
         self.timeout = timeout
         self.session = requests.Session()
         self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         })
+        
+        # Configure Retries
+        from requests.adapters import HTTPAdapter
+        from urllib3.util.retry import Retry
+        retry_strategy = Retry(
+            total=retries,
+            backoff_factor=1,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["HEAD", "GET", "OPTIONS"]
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        self.session.mount("http://", adapter)
+        self.session.mount("https://", adapter)
     
     def scrape_url(self, url: str) -> Dict[str, str]:
         """
@@ -64,7 +77,7 @@ class WebScraper:
                 logger.warning(f"URL returned non-HTML content: {content_type}")
                 # We raise a specific error that the UI can catch to handle images
                 if 'image/' in content_type:
-                     raise ValueError(f"IMAGE_URL_DETECTED:{content_type}")
+                    raise ValueError("IMAGE_URL_DETECTED")
                 raise ValueError(f"The provided URL returned {content_type} instead of HTML. Please provide a URL to a web page.")
             
             soup = BeautifulSoup(response.content, 'html.parser')

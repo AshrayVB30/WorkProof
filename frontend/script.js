@@ -84,7 +84,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     updateLinkCounter(result.metadata.unique_links);
                 }
 
-                scrapeBtn.innerHTML = result.method === 'ocr' ? '👁️ OCR Done' : '✅ Done';
+                scrapeBtn.innerHTML = (result.method === 'paddleocr' || result.method === 'ocr') ? '👁️ OCR Done' : '✅ Done';
             } else {
                 throw new Error(result.detail || 'Unknown error');
             }
@@ -130,7 +130,72 @@ document.addEventListener('DOMContentLoaded', () => {
         badge.innerHTML = `🔗 Unique Links: <span>${count}</span>`;
     }
 
-    function updateFields(data) {
+    function flattenObject(obj, current = {}, prefix = '') {
+        for (let key in obj) {
+            let value = obj[key];
+            let newPrefix = prefix;
+
+            // Special handling for advisor sections to match index.html data-field
+            const advisorSections = {
+                "account_advisor": "Account Advisor - ",
+                "assets_manager": "Assets Manager - ",
+                "investment_advisor": "Investment Advisor - ",
+                "insurance_manager": "Insurance Manager - "
+            };
+
+            if (advisorSections[key]) {
+                newPrefix = advisorSections[key];
+            }
+
+            if (value && typeof value === 'object' && !Array.isArray(value)) {
+                flattenObject(value, current, newPrefix);
+            } else {
+                // Mapping table for snake_case JSON keys -> Display Labels
+                const labelMap = {
+                    "full_name": "Full Name", "gender": "Gender", "dob": "DOB", "ssn": "SSN",
+                    "address_1": "Address 1", "address_2": "Address 2", "city": "City",
+                    "state": "State", "postal": "Postal", "country": "Country",
+                    "email": "Email", "contact": "Contact",
+                    "customer_id": "Customer ID", "account_type": "Account Type",
+                    "account_name": "Account Name", "account_number": "Account Number",
+                    "iban": "IBAN", "bic": "BIC", "btc_address": "BTC Address",
+                    "eth_address": "ETH Address", "ltc_address": "LTC Address",
+                    "cc_no": "CC No", "last_txn_amount": "Last Txn Amount",
+                    "last_txn_date": "Last Txn Date", "account_status": "Account Status",
+                    "account_currency": "Account Currency", "company": "Company",
+                    "bs": "BS", "ein": "EIN", "skill_description": "Skill Description",
+                    "isin": "ISIN", "coupon": "Coupon", "invested_amount": "Invested Amount",
+                    "maturity_date": "Maturity Date", "bond_name": "Bond Name",
+                    "bond_class": "Bond Class", "department": "Department",
+                    "ean13": "Ean13", "product_name": "Product Name",
+                    "unit_price": "Unit Price", "user": "User",
+                    "purchase_token": "Purchase Token", "buying_ipv4": "Buying IPv4",
+                    "buying_ipv6": "Buying IPv6", "purchase_status": "Purchase Status",
+                    "purchase_category": "Purchase Category", "type": "Type",
+                    "model": "Model", "manufacturer": "Manufacturer", "vin": "VIN",
+                    "beneficiary_identifier_id": "Beneficiary Identifier ID",
+                    "ins_no": "INS No", "insurance_status": "Insurance Status",
+                    "advisor_id": "Advisor ID", "manager_id": "Manager ID",
+                    "name": "Name", "address": "Address"
+                };
+
+                const displayLabel = labelMap[key] || key;
+                const finalKey = newPrefix + displayLabel;
+                current[finalKey] = value;
+
+                // Also keep raw keys just in case
+                if (key !== finalKey) {
+                    current[key] = value;
+                }
+            }
+        }
+        return current;
+    }
+
+    function updateFields(nestedData) {
+        console.log('Incoming Nested Data:', nestedData);
+        const data = flattenObject(nestedData);
+        console.log('Flattened Data for UI:', data);
         const fieldCards = document.querySelectorAll('.field-card');
 
         // Reset old styles
@@ -140,23 +205,16 @@ document.addEventListener('DOMContentLoaded', () => {
             const fieldKey = card.getAttribute('data-field');
             const valueDiv = card.querySelector('.field-value');
 
-            // Try to find a match in the scraped data
-            // We use case-insensitive and partial matching for better results
+            // Try to find a match in the flattened data
             let foundValue = data[fieldKey];
 
-            if (!foundValue) {
-                // Try case-insensitive
-                const lowerKey = fieldKey.toLowerCase();
-                const matchedKey = Object.keys(data).find(k => k.toLowerCase() === lowerKey);
-                if (matchedKey) foundValue = data[matchedKey];
-            }
-
-            if (foundValue) {
+            if (foundValue !== undefined && foundValue !== null) {
                 valueDiv.innerText = foundValue;
                 valueDiv.classList.remove('empty');
-
-                // For now, assume it's a "match" if we found it on the page
-                card.classList.add('match');
+                // Only mark as match if there is actual content
+                if (foundValue.toString().trim() !== '') {
+                    card.classList.add('match');
+                }
             }
         });
     }
