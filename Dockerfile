@@ -1,30 +1,27 @@
-# Use an official Python runtime as a parent image
-FROM python:3.12-slim
+FROM python:3.12-slim-bookworm
 
-# Set the working directory in the container
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    FLAGS_use_mkldnn=0 \
+    FLAGS_enable_pir_api=0 \
+    FLAGS_enable_pir_in_executor=0 \
+    PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True \
+    PADDLE_DISABLE_ONE_DNN=1
+
 WORKDIR /app
 
-# Install system dependencies for Tesseract and OpenCV (if needed)
-RUN apt-get update && apt-get install -y --fix-missing \
-    tesseract-ocr \
-    libtesseract-dev \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1 \
+    libglib2.0-0 \
+    libgomp1 \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy the requirements file into the container
 COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Install any needed packages specified in requirements.txt
-# We skip PySide6 and pyinstaller in Docker as they are for the GUI version
-RUN sed -i '/PySide6/d' requirements.txt && \
-    sed -i '/pyinstaller/d' requirements.txt && \
-    pip install --no-cache-dir -r requirements.txt
-
-# Copy the current directory contents into the container at /app
 COPY . .
 
-# Make port 8000 available to the world outside this container
 EXPOSE 8000
 
-# Run server.py when the container launches
 CMD ["python", "server.py"]

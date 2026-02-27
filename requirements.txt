@@ -12,5 +12,4 @@ beautifulsoup4>=4.12.0
 lxml>=4.9.0
 pyinstaller
 paddleocr
-paddlepaddle
-paddleocr[all] 
+paddlepaddle==3.1.1

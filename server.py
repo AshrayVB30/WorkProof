@@ -1,597 +1,1600 @@
 import os
-# Bypassing regressions in Paddle 3.3.0 on Windows
-os.environ['PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK'] = 'True'
-os.environ['FLAGS_use_mkldnn'] = '0'
-os.environ['FLAGS_use_onednn'] = '0'
-os.environ['FLAGS_enable_pir_api'] = '0'
-os.environ['FLAGS_enable_new_ir_api'] = '0'
-os.environ['FLAGS_enable_pir_in_executor'] = '0'
-os.environ['FLAGS_new_executor'] = '0'
-
-import sys
-import paddle
-paddle.device.set_device('cpu')
-paddle.set_flags({
-    'FLAGS_use_mkldnn': 0,
-    'FLAGS_use_onednn': 0,
-    'FLAGS_enable_pir_api': 0
-})
-
-import logging
-import requests
+import re
 import io
-import tempfile
-from typing import Dict, List, Union, Tuple
+import numpy as np
+import requests
+import logging
+import difflib
+import time
+import copy
+import pytesseract
+from collections import defaultdict
+from typing import Dict, Any
+from PIL import Image, ImageEnhance
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse
-import uvicorn
+from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from PIL import Image
-import numpy as np
-import cv2
-import re
 
-# ✅ PaddleOCR
+# Avoid Paddle oneDNN/PIR runtime crashes seen in some Linux container builds.
+os.environ.setdefault("FLAGS_use_mkldnn", "0")
+os.environ.setdefault("FLAGS_enable_pir_api", "0")
+os.environ.setdefault("FLAGS_enable_pir_in_executor", "0")
+os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
+
 from paddleocr import PaddleOCR
 
-# Add current directory to path for backend imports
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from backend.engine.web_scraper import WebScraper
+from backend.engine.new_field_definitions import FIELD_DEFINITIONS
 
-# ---------------------------------------------------
+try:
+    import multipart  # type: ignore # noqa: F401
+    MULTIPART_AVAILABLE = True
+except Exception:
+    MULTIPART_AVAILABLE = False
+
+
+# ---------------------------------------------------------
 # Logging
-# ---------------------------------------------------
+# ---------------------------------------------------------
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("WorkProof.Server")
+logger = logging.getLogger(__name__)
 
-app = FastAPI(title="WorkProof API")
-scraper = WebScraper()
 
-# ---------------------------------------------------
-# Initialize PaddleOCR ONCE (important)
-# ---------------------------------------------------
-ocr_engine = PaddleOCR(
-    use_textline_orientation=True,
-    lang='en'
+# ---------------------------------------------------------
+# Simple in-memory cache for repeated URL scrapes
+# ---------------------------------------------------------
+CACHE_TTL_SECONDS = 1800
+CACHE_MAX_ITEMS = 64
+SCRAPE_CACHE: dict[str, tuple[float, Dict[str, Any]]] = {}
+
+
+def _cache_get(url: str) -> Dict[str, Any] | None:
+    item = SCRAPE_CACHE.get(url)
+    if not item:
+        return None
+    ts, data = item
+    if time.time() - ts > CACHE_TTL_SECONDS:
+        SCRAPE_CACHE.pop(url, None)
+        return None
+    return copy.deepcopy(data)
+
+
+def _cache_set(url: str, data: Dict[str, Any]) -> None:
+    if len(SCRAPE_CACHE) >= CACHE_MAX_ITEMS:
+        oldest_key = min(SCRAPE_CACHE, key=lambda k: SCRAPE_CACHE[k][0])
+        SCRAPE_CACHE.pop(oldest_key, None)
+    SCRAPE_CACHE[url] = (time.time(), copy.deepcopy(data))
+
+
+
+
+# ---------------------------------------------------------
+# Initialize OCR engine
+# ---------------------------------------------------------
+OCR_ENGINE_MODE = os.getenv("OCR_ENGINE", "auto").strip().lower()
+ocr_engine = None
+
+if OCR_ENGINE_MODE == "tesseract":
+    logger.info("OCR engine: tesseract-only mode")
+else:
+    import paddle
+    logger.info("Loading PaddleOCR model...")
+    try:
+        paddle.set_flags({
+            "FLAGS_use_mkldnn": False,
+            "FLAGS_enable_pir_api": False,
+            "FLAGS_enable_pir_in_executor": False,
+        })
+    except Exception:
+        pass
+
+    ocr_engine = PaddleOCR(
+        use_doc_orientation_classify=False,
+        use_doc_unwarping=False,
+        use_textline_orientation=False,
+        enable_mkldnn=False,
+        cpu_threads=2,
+        lang="en"
+    )
+    logger.info("PaddleOCR loaded successfully!")
+
+
+# ---------------------------------------------------------
+# FastAPI App
+# ---------------------------------------------------------
+app = FastAPI(title="WorkProof OCR Server")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-# ---------------------------------------------------
+# ---------------------------------------------------------
+# Serve Frontend (CORRECT CONFIG)
+# ---------------------------------------------------------
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+FRONTEND_DIR = os.path.join(BASE_DIR, "frontend")
+
+# Serve CSS + JS from /static/*
+app.mount("/frontend", StaticFiles(directory=FRONTEND_DIR), name="static")
+
+
+@app.get("/")
+def serve_frontend():
+    return FileResponse(os.path.join(FRONTEND_DIR, "index.html"))
+
+
+# ---------------------------------------------------------
 # Request Model
-# ---------------------------------------------------
+# ---------------------------------------------------------
 class ScrapeRequest(BaseModel):
     url: str
 
-# ---------------------------------------------------
-# OCR USING PADDLE
-# ---------------------------------------------------
-def extract_text_with_paddle(image: Image.Image) -> str:
+
+# ---------------------------------------------------------
+# Download Image
+# ---------------------------------------------------------
+def download_image(image_url: str) -> Image.Image:
     try:
-        img_np = np.array(image)
-
-        # If grayscale convert to BGR
-        if len(img_np.shape) == 2:
-            img_np = cv2.cvtColor(img_np, cv2.COLOR_GRAY2BGR)
-
-        result = ocr_engine.predict(img_np)
-
-        if not result:
-            return ""
-
-        lines = []
-
-        for res in result:
-            # Handle PaddleX OCRResult (which behaves like a dict)
-            if hasattr(res, 'get'):
-                texts = res.get('rec_texts', [])
-                scores = res.get('rec_scores', [])
-                for text, confidence in zip(texts, scores):
-                    if confidence > 0.4:
-                        lines.append(text)
-            # Fallback for standard PaddleOCR result [[bbox, (text, conf)], ...]
-            elif isinstance(res, list):
-                for line in res:
-                    if len(line) >= 2 and isinstance(line[1], (tuple, list)):
-                        text, confidence = line[1]
-                        if confidence > 0.4:
-                            lines.append(text)
-
-        return "\n".join(lines)
-
+        response = requests.get(
+            image_url,
+            timeout=20,
+            headers={"User-Agent": "WorkProofOCR/1.0"},
+        )
+        response.raise_for_status()
+        return Image.open(io.BytesIO(response.content)).convert("RGB")
     except Exception as e:
-        logger.error(f"OCR extraction failed: {e}")
-        return ""
+        logger.error(f"Failed to download image: {e}")
+        raise HTTPException(status_code=400, detail="Invalid image URL")
 
-# ---------------------------------------------------
-# OCR CLEANING UTILITY
-# ---------------------------------------------------
-def clean_ocr_field(value: str, field_name: str) -> str:
-    if not value:
-        return ""
-    
-    # Remove common OCR artifacts
-    cleaned = value.strip().replace('|', '').replace('[', '').replace(']', '')
-    
-    # Field specific cleaning
-    field_lower = field_name.lower()
-    if field_lower == "dob" or "date" in field_lower:
-        # Keep alphanumeric and common separators for dates
-        cleaned = re.sub(r'[^0-9a-zA-Z/\-\s]', '', cleaned)
-    elif "amount" in field_lower or "price" in field_lower or "coupon" in field_lower:
-        # Keep digits, dots, and common currency/number chars
-        cleaned = re.sub(r'[^0-9.]', '', cleaned)
-    elif "contact" in field_lower or "phone" in field_lower:
-        # Keep digits, common phone symbols, and 'x' for masks
-        cleaned = re.sub(r'[^0-9+\-\s()xX]', '', cleaned)
-        
-    return cleaned.strip()
 
-# ---------------------------------------------------
-# KNOWN FIELDS & SECTION HEADERS
-# ---------------------------------------------------
-KNOWN_FIELDS = [
-    "Full Name", "Gender", "DOB", "SSN", "Address 1", "Address 2", "City", "State", "Postal", "Country", 
-    "Email", "Contact", "Customer ID", "Account Type", "Account Name", "Account Number", "IBAN", "BIC", 
-    "BTC Address", "ETH Address", "LTC Address", "CC No", "Last Txn Amount", "Last Txn Date", 
-    "Account Status", "Account Currency", "Company", "BS", "EIN", "Skill Description", "ISIN", 
-    "Coupon", "Invested Amount", "Maturity Date", "Bond Name", "Bond Class", "Department", "Ean13", 
-    "Product Name", "Unit Price", "User", "Purchase Token", "Buying IPv4", "Buying IPv6", 
-    "Purchase Status", "Purchase Category", "Type", "Model", "Manufacturer", "VIN", 
-    "Beneficiary Identifier ID", "INS No", "Insurance Status", "Account Advisor - Advisor ID", 
-    "Account Advisor - Name", "Account Advisor - Contact", "Account Advisor - Address", 
-    "Assets Manager - Advisor ID", "Assets Manager - Name", "Assets Manager - Contact", 
-    "Assets Manager - Address", "Investment Advisor - Manager ID", "Investment Advisor - Name", 
-    "Investment Advisor - Contact", "Investment Advisor - Address", "Insurance Manager - Manager ID", 
-    "Insurance Manager - Name", "Insurance Manager - Contact", "Insurance Manager - Address",
-    "A/c Name", "A/C Name", "A/c Number", "A/C Number", "A/c Type", "A/C Type", "CC_No", 
-    "INS No.", "IN", "VIN No.", "Total Amount", "Price", "Dob", "Beneficiary", "Identifier ID",
-    "Skll Description", "SKLL Description", "Skill Description",
-    "Advisor ID", "Manager ID", "Name", "Contact", "Address", "IPv6", "IPv4"
-]
+def load_image_from_bytes(content: bytes) -> Image.Image:
+    try:
+        return Image.open(io.BytesIO(content)).convert("RGB")
+    except Exception as e:
+        logger.error(f"Failed to parse uploaded image: {e}")
+        raise HTTPException(status_code=400, detail="Invalid uploaded image")
 
-# Define mapping from possible field labels (aliases) to canonical schema keys
-ALIAS_MAP = {
-    "A/c Name": "Account Name", "A/C Name": "Account Name",
-    "A/c Number": "Account Number", "A/C Number": "Account Number",
-    "A/c Type": "Account Type", "A/C Type": "Account Type",
-    "CC_No": "CC No",
-    "INS No.": "INS No",
-    "IN": "VIN", "VIN No.": "VIN",
-    "Dob": "DOB",
-    "Total Amount": "Last Txn Amount", "Price": "Unit Price",
-    "Beneficiary": "Beneficiary Identifier ID", "Identifier ID": "Beneficiary Identifier ID",
-    "Skll Description": "Skill Description", "SKLL Description": "Skill Description",
-    "Purchase Token": "Purchase Token", "purchase Token": "Purchase Token",
-    "IPv4": "Buying IPv4", "IPv6": "Buying IPv6"
+
+# ---------------------------------------------------------
+# OCR Extraction
+# ---------------------------------------------------------
+def _normalize_text_key(text: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9 ]", "", text.lower())).strip()
+
+
+def _normalize_label(text: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", text.lower())
+
+
+def _field_key(field_name: str) -> str:
+    return field_name.lower().replace(' ', '_').replace('/', '_').replace('-', '_')
+
+KEY_TO_FIELD_NAME: Dict[str, str] = {_field_key(name): name for name in FIELD_DEFINITIONS.keys()}
+
+
+def _build_label_catalog() -> Dict[str, str]:
+    return {_normalize_label(field_name): field_name for field_name in FIELD_DEFINITIONS.keys()}
+
+
+LABEL_CATALOG = _build_label_catalog()
+LABEL_ALIASES = {
+    "manufacturer": "Manufacture",
+    "acnumber": "A/c Number",
+    "beneficiary": "Beneficiary Identifier ID",
+    "identifierid": "Beneficiary Identifier ID",
+    "insno": "INS No",
+    "sklldescription": "Skill Description",
 }
 
 SECTION_HEADERS = [
-    "Personal Information", "Account Information", "Investment Information", 
-    "Assets & Last Purchase Information", "Last Purchase Detail", "Vehicle Detail", 
-    "Insurance Detail", "Legal Advisors", "Account Advisor", "Assets Manager", 
-    "Investment Advisor", "Insurance Manager", "Detail", "Insurance"
+    "personal information",
+    "account information",
+    "investment information",
+    "assets & last purchase information",
+    "last purchase detail",
+    "vehicle detail",
+    "insurance detail",
+    "legal advisors",
 ]
 
-def nest_data(flat_data: Dict[str, str]) -> Dict:
-    """Transforms flat field-value pairs into the 64-field nested schema with alias support"""
+ADVISOR_SECTIONS = {
+    "account advisor": "Account Advisor",
+    "assets manager": "Assets Manager",
+    "investment advisor": "Investment Advisor",
+    "insurance manager": "Insurance Manager",
+}
 
-    def g(key, default=""):
-        # Case-insensitive lookup with alias support
-        key_lower = key.lower()
-        
-        # 1. Try exact/case-insensitive match for the primary key
-        for k, v in flat_data.items():
-            if k.lower() == key_lower:
-                return v
-        
-        # 2. Check for aliases that map to this key
-        for alias, canonical in ALIAS_MAP.items():
-            if canonical.lower() == key_lower:
-                # If alias is found in flat_data, return its value
-                for k, v in flat_data.items():
-                    if k.lower() == alias.lower():
-                        return v
-        return default
+ADVISOR_SUBFIELDS = {
+    "advisorid": "Advisor ID",
+    "managerid": "Manager ID",
+    "name": "Name",
+    "contact": "Contact",
+    "address": "Address",
+}
 
-    return {
-        "personal_information": {
-            "full_name": g("Full Name"),
-            "gender": g("Gender"),
-            "dob": g("DOB"),
-            "ssn": g("SSN"),
-            "address_1": g("Address 1"),
-            "address_2": g("Address 2"),
-            "city": g("City"),
-            "state": g("State"),
-            "postal": g("Postal"),
-            "country": g("Country"),
-            "email": g("Email"),
-            "contact": g("Contact")
-        },
-        "account_information": {
-            "customer_id": g("Customer ID"),
-            "account_type": g("Account Type"),
-            "account_name": g("Account Name"),
-            "account_number": g("Account Number"),
-            "iban": g("IBAN"),
-            "bic": g("BIC"),
-            "btc_address": g("BTC Address"),
-            "eth_address": g("ETH Address"),
-            "ltc_address": g("LTC Address"),
-            "cc_no": g("CC No"),
-            "last_txn_amount": g("Last Txn Amount"),
-            "last_txn_date": g("Last Txn Date"),
-            "account_status": g("Account Status"),
-            "account_currency": g("Account Currency")
-        },
-        "investment_information": {
-            "company": g("Company"),
-            "bs": g("BS"),
-            "ein": g("EIN"),
-            "skill_description": g("Skill Description"),
-            "isin": g("ISIN"),
-            "coupon": g("Coupon"),
-            "invested_amount": g("Invested Amount"),
-            "maturity_date": g("Maturity Date"),
-            "bond_name": g("Bond Name"),
-            "bond_class": g("Bond Class")
-        },
-        "assets_last_purchase_information": {
-            "department": g("Department"),
-            "ean13": g("Ean13"),
-            "product_name": g("Product Name"),
-            "unit_price": g("Unit Price"),
-            "user": g("User"),
-            "purchase_token": g("Purchase Token"),
-            "buying_ipv4": g("Buying IPv4"),
-            "buying_ipv6": g("Buying IPv6"),
-            "purchase_status": g("Purchase Status"),
-            "purchase_category": g("Purchase Category")
-        },
-        "vehicle_detail": {
-            "type": g("Type"),
-            "model": g("Model"),
-            "manufacturer": g("Manufacturer"),
-            "vin": g("VIN")
-        },
-        "insurance_detail": {
-            "beneficiary_identifier_id": g("Beneficiary Identifier ID"),
-            "ins_no": g("INS No"),
-            "insurance_status": g("Insurance Status")
-        },
-        "legal_advisors": {
-            "account_advisor": {
-                "advisor_id": g("Account Advisor - Advisor ID"),
-                "name": g("Account Advisor - Name"),
-                "contact": g("Account Advisor - Contact"),
-                "address": g("Account Advisor - Address")
-            },
-            "assets_manager": {
-                "advisor_id": g("Assets Manager - Advisor ID"),
-                "name": g("Assets Manager - Name"),
-                "contact": g("Assets Manager - Contact"),
-                "address": g("Assets Manager - Address")
-            },
-            "investment_advisor": {
-                "manager_id": g("Investment Advisor - Manager ID"),
-                "name": g("Investment Advisor - Name"),
-                "contact": g("Investment Advisor - Contact"),
-                "address": g("Investment Advisor - Address")
-            },
-            "insurance_manager": {
-                "manager_id": g("Insurance Manager - Manager ID"),
-                "name": g("Insurance Manager - Name"),
-                "contact": g("Insurance Manager - Contact"),
-                "address": g("Insurance Manager - Address")
-            }
-        }
-    }
 
-# ---------------------------------------------------
-# PARSER (Improved Context-Aware & Multi-line Support)
-# ---------------------------------------------------
-def parse_ocr_text(text: str) -> Dict[str, str]:
-    data = {}
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
+def _find_best_label(line: str, current_section: str | None) -> str | None:
+    raw = line.strip()
+    if not raw:
+        return None
 
-    # Keywords that should never be treated as values
-    SKIPPABLE_HEADERS = set([h.lower() for h in SECTION_HEADERS] + ["detail", "information", "beneficiary", "insurance"])
-    STOP_LABELS = sorted(list(set([f.lower() for f in KNOWN_FIELDS] + [a.lower() for a in ALIAS_MAP.keys()] + 
-                      ["name", "contact", "address", "advisor id", "manager id", "identifier id"])), key=len, reverse=True)
+    normalized = _normalize_label(raw)
+    if not normalized:
+        return None
 
-    def should_skip(line):
-        l_low = line.lower()
-        return l_low in SKIPPABLE_HEADERS or len(l_low) < 2
+    if normalized in LABEL_CATALOG:
+        return LABEL_CATALOG[normalized]
+    if normalized in LABEL_ALIASES:
+        return LABEL_ALIASES[normalized]
 
-    def should_stop(line, val_parts=None):
-        l_low = line.strip().lower()
-        if not l_low:
-            return False
-            
-        # 1. Advisor Headers MUST ALWAYS stop collection (strong boundaries)
-        if l_low in [h.lower() for h in ["account advisor", "assets manager", "investment advisor", "insurance manager"]]:
+    best_label = None
+    best_ratio = 0.0
+
+    # Full-field fuzzy matching.
+    for norm_label, original in LABEL_CATALOG.items():
+        if len(normalized) < 3 or len(norm_label) < 3:
+            continue
+        length_ratio = len(normalized) / max(len(norm_label), 1)
+        if length_ratio < 0.60 or length_ratio > 1.40:
+            continue
+        ratio = difflib.SequenceMatcher(a=normalized, b=norm_label).ratio()
+        if ratio > best_ratio:
+            best_ratio = ratio
+            best_label = original
+
+    if best_ratio >= 0.88:
+        return best_label
+
+    # Section-scoped subfield matching for advisor blocks.
+    if current_section:
+        best_sub = None
+        best_sub_ratio = 0.0
+        for sub_norm, sub_name in ADVISOR_SUBFIELDS.items():
+            ratio = difflib.SequenceMatcher(a=normalized, b=sub_norm).ratio()
+            if ratio > best_sub_ratio:
+                best_sub_ratio = ratio
+                best_sub = sub_name
+
+        if best_sub and best_sub_ratio >= 0.84:
+            full = f"{current_section} - {best_sub}"
+            if full in FIELD_DEFINITIONS:
+                return full
+
+    return None
+
+
+def _looks_like_header_or_label(text: str, current_section: str | None) -> bool:
+    cleaned = text.strip().lower()
+    if not cleaned:
+        return True
+
+    for header in SECTION_HEADERS:
+        if difflib.SequenceMatcher(a=cleaned, b=header).ratio() >= 0.86:
             return True
-        
-        # 2. General Section Headers only stop if we already have a value
-        # But we must be careful not to stop on values that contain words like "Personal"
-        if l_low in [h.lower() for h in SECTION_HEADERS] or l_low in SKIPPABLE_HEADERS:
-            if val_parts and len(val_parts) > 0:
-                return True
-            return False 
-            
-        if len(l_low) < 2:
-            return False 
-        
-        # 3. Label Check: Stop if the line is a label or starts with one
-        for f in sorted(KNOWN_FIELDS + list(ALIAS_MAP.keys()) + ["advisor id", "manager id", "name", "contact", "address"], key=len, reverse=True):
-            f_low = f.lower()
-            if l_low == f_low:
-                return True
-            if l_low.startswith(f_low):
-                # Check character immediately after the label
-                if len(l_low) > len(f_low):
-                    next_char = l_low[len(f_low)]
-                    if next_char in [' ', ':', '|', '-']:
-                        return True
-                else:
-                    # Exactly matches
-                    return True
-                
-        return False
 
-    # ---------------------------------------------------
-    # LINE SPLITTING PRE-PROCESSOR
-    # ---------------------------------------------------
-    final_lines = []
-    # Labels that might be on the same line as a value (like EIN/Skill Description)
-    # We AVOID adding generic words like 'name' here to prevent splitting 'Full Name'
-    SPLIT_LABELS = [
-        "skill description", "skll description", "isin", "coupon", "ein", "ipv6", "ipv4"
-    ]
+    for section in ADVISOR_SECTIONS.keys():
+        if difflib.SequenceMatcher(a=cleaned, b=section).ratio() >= 0.86:
+            return True
 
-    for line in [l.strip() for l in text.splitlines() if l.strip()]:
-        l_low = line.lower()
-        found_split = False
-        
-        # Split on labels that ARE NOT at the start (intra-line splitting)
-        for label in SPLIT_LABELS:
-            idx = l_low.find(label)
-            # If label is present and NOT at start
-            if idx > 1 and (l_low[idx-1] in [' ', ':', '|', '-']):
-                # Special cases for fields that often follow values
-                if label in ["skill description", "skll description", "isin", "coupon", "name", "contact", "address", "company"]:
-                    part1 = line[:idx].strip()
-                    part2 = line[idx:].strip()
-                    if part1: final_lines.append(part1)
-                    if part2: final_lines.append(part2)
-                    found_split = True
-                    break
-        
-        if not found_split:
-            final_lines.append(line)
-    
-    lines = final_lines
-    
-    # Sort KNOWN_FIELDS by length (desc) for matching logic
-    FIELDS_DESC = sorted(KNOWN_FIELDS, key=len, reverse=True)
+    return _find_best_label(text, current_section) is not None
 
 
-    current_section = None
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        line_low = line.lower()
-        
-        # Track Section Header for Advisors
-        matched_section = None
-        for h in ["Account Advisor", "Assets Manager", "Investment Advisor", "Insurance Manager"]:
-            # Use fuzzy check but avoid collision with "Assets & Last Purchase Information"
-            if h.lower() in line_low and "last purchase" not in line_low:
-                matched_section = h
-                break
-        
-        if matched_section:
-            current_section = matched_section
-            i += 1
-            continue
+def _is_date_like(value: str) -> bool:
+    value_clean = value.strip().replace("+", "-").replace("#", "")
+    if re.search(r"\b\d{1,2}[-/ ](?:[A-Za-z]{3,9}|\d{1,2})[-/ ]\d{2,4}\b", value_clean):
+        return True
+    if re.search(r"\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b", value_clean.lower()) and re.search(r"\d", value_clean):
+        return True
+    return False
 
-        # Skip other general section headers
-        if any(line_low == h.lower() for h in SECTION_HEADERS):
-            # Reset current_section if we hit a different general section
-            # (Advisors are handled above)
-            current_section = None
-            i += 1
-            continue
 
-        # 1. Try Colon Match (label: value)
-        if ":" in line:
-            parts = line.split(":", 1)
-            key = parts[0].strip()
-            value = parts[1].strip()
-            
-            # If value is empty, collect subsequent lines
-            if not value:
-                val_parts = []
-                j = i + 1
-                while j < len(lines):
-                    if should_stop(lines[j], val_parts):
-                        break
-                    if not should_skip(lines[j]):
-                        val_parts.append(lines[j])
-                    j += 1
-                value = " ".join(val_parts)
-                i = j - 1
-            
-            if current_section and key in ["Advisor ID", "Manager ID", "Name", "Contact", "Address"]:
-                key = f"{current_section} - {key}"
-                
-            data[key] = clean_ocr_field(value, key)
-            i += 1
-            continue
+def _score_value(field_name: str, value: str) -> float:
+    value = value.strip()
+    if not value:
+        return -1.0
 
-        # 2. Try Exact Match with known fields
-        found_field = None
-        # Special check for Advisor fields
-        if current_section:
-            for field_part in ["Advisor ID", "Manager ID", "Name", "Contact", "Address"]:
-                if line_low == field_part.lower():
-                    found_field = f"{current_section} - {field_part}"
-                    break
-        
-        # General check
-        if not found_field:
-            for field in FIELDS_DESC:
-                if line_low == field.lower():
-                    found_field = field
-                    break
-        
-        if found_field:
-            val_parts = []
-            j = i + 1
-            while j < len(lines):
-                if should_stop(lines[j], val_parts):
-                    break
-                if not should_skip(lines[j]):
-                    val_parts.append(lines[j])
-                j += 1
-            value = " ".join(val_parts)
-            data[found_field] = clean_ocr_field(value, found_field)
-            i = j - 1 
-            i += 1 
-            continue
-        
-        # 3. Fuzzy search for field within line
-        for field in FIELDS_DESC:
-            if len(field) > 2 and field.lower() in line_low:
-                idx = line_low.find(field.lower())
-                # Boundary check: label must be at start or preceded by separator
-                if idx > 0 and (line_low[idx-1] not in [' ', ':', '|', '-']):
-                    continue
-                
-                # Further check: if it looks like a section header, skip
-                if field.lower() in [h.lower() for h in SECTION_HEADERS]:
-                    continue
-                    
-                val_candidate = line[idx + len(field):].strip().lstrip(':').strip()
-                if val_candidate:
-                    key = field
-                    if current_section and key in ["Advisor ID", "Manager ID", "Name", "Contact", "Address"]:
-                        key = f"{current_section} - {key}"
-                    
-                    canonical_key = ALIAS_MAP.get(key, key)
-                    if canonical_key not in data or not data[canonical_key]:
-                        val_parts = [val_candidate]
-                        j = i + 1
-                        while j < len(lines):
-                            if should_stop(lines[j], val_parts):
-                                break
-                            if not should_skip(lines[j]):
-                                val_parts.append(lines[j])
-                            j += 1
-                        
-                        full_val = " ".join(val_parts)
-                        data[key] = clean_ocr_field(full_val, key)
-                        i = j - 1
-                        break
-        
-        i += 1
+    field_def = FIELD_DEFINITIONS.get(field_name, {})
+    field_type = field_def.get("type", "text")
+    score = 0.0
 
-    return data
+    # Penalize values that look like another label/header.
+    if _normalize_label(value) in LABEL_CATALOG:
+        score -= 4.0
+    if any(difflib.SequenceMatcher(a=value.lower(), b=h).ratio() >= 0.88 for h in SECTION_HEADERS):
+        score -= 4.0
 
-# ---------------------------------------------------
-# IMAGE PROCESSING
-# ---------------------------------------------------
-async def process_image_url(url: Union[str, List[str], Tuple[str, ...]]):
+    has_digits = bool(re.search(r"\d", value))
+    has_letters = bool(re.search(r"[A-Za-z]", value))
+    normalized_label = _normalize_label(field_name)
+    normalized_value = _normalize_label(value)
+    label_similarity = difflib.SequenceMatcher(a=normalized_value, b=normalized_label).ratio()
+    if label_similarity >= 0.70:
+        score -= 3.0
 
-    if isinstance(url, (list, tuple)):
-        results = {}
-        for u in url:
-            try:
-                results[u] = await _process_single_image(u)
-            except Exception as e:
-                results[u] = {"error": str(e)}
-        return results
+    if field_type == "email":
+        if re.fullmatch(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}", value):
+            score += 8.0
+        elif "@" in value:
+            score += 4.0
+        else:
+            score -= 4.0
+    elif field_type == "phone":
+        digits = re.sub(r"\D", "", value)
+        if len(digits) >= 7:
+            score += 6.0
+        else:
+            score -= 3.0
+    elif field_type == "currency":
+        if re.fullmatch(r"[$€£]?\s*\d+(?:[.,]\d{1,2})?", value):
+            score += 6.0
+        elif has_digits:
+            score += 2.0
+        else:
+            score -= 2.0
+        if has_letters:
+            score -= 3.0
+    elif field_type == "number":
+        if has_digits and not has_letters:
+            score += 5.0
+        elif has_digits:
+            score += 2.0
+        else:
+            score -= 2.0
+        if has_letters:
+            score -= 3.0
+    elif field_type == "date":
+        if _is_date_like(value):
+            score += 6.0
+        else:
+            score -= 3.0
     else:
-        return await _process_single_image(url)
+        if len(value) >= 3:
+            score += 1.5
+        if has_letters:
+            score += 1.0
+
+    # Mild bonus for cleaner-looking values.
+    if not re.search(r"[#*]{2,}", value):
+        score += 0.3
+    if len(value) > 64:
+        score -= 1.0
+
+    # Field-specific rules.
+    compact = re.sub(r"[^A-Za-z0-9*]", "", value)
+
+    if field_name == "Full Name" or field_name.endswith(" - Name"):
+        words = re.findall(r"[A-Za-z]{2,}", value)
+        if len(words) >= 2:
+            score += 2.5
+        else:
+            score -= 4.0
+        if "information" in value.lower():
+            score -= 4.0
+        if "," in value:
+            score -= 2.0
+
+    if field_name == "Customer ID":
+        if re.fullmatch(r"\d{6,}", compact):
+            score += 7.0
+        elif has_digits:
+            score += 2.0
+        else:
+            score -= 4.0
+
+    if field_name == "SSN":
+        digits = re.sub(r"\D", "", value)
+        if re.fullmatch(r"\d{9}", digits):
+            score += 7.0
+        elif len(digits) >= 7:
+            score += 3.0
+        else:
+            score -= 3.0
+
+    if field_name == "A/c Number":
+        if re.search(r"\*{2,}\d{2,}", value):
+            score += 6.0
+        elif has_digits:
+            score += 2.0
+        else:
+            score -= 2.0
+
+    if field_name == "Beneficiary Identifier ID":
+        lower = value.lower().strip()
+        if lower in {"insurance", "identifier", "identifier id", "beneficiary"}:
+            score -= 6.0
+        compact_b = re.sub(r"[^A-Za-z0-9]", "", value)
+        if re.fullmatch(r"[A-Za-z0-9]{8,20}", compact_b):
+            score += 4.5
+        elif len(compact_b) < 6:
+            score -= 2.0
+
+    if field_name.endswith(" - Advisor ID") or field_name.endswith(" - Manager ID"):
+        compact_id = re.sub(r"\s+", "", value)
+        if _is_id_like(compact_id):
+            score += 6.0
+        elif re.fullmatch(r"[A-Za-z]{2,}\s+[A-Za-z]{2,}", value):
+            score -= 5.0
+        else:
+            score -= 2.0
+
+    if field_name.endswith(" - Contact"):
+        if _is_phone_like(value):
+            score += 5.0
+        else:
+            score -= 3.0
+
+    if field_name.endswith(" - Address"):
+        if "," in value:
+            score += 4.0
+        elif _is_phone_like(value):
+            score -= 4.0
+        elif _is_id_like(value):
+            score -= 3.0
+
+    if field_name == "IBAN":
+        iban = re.sub(r"[^A-Za-z0-9]", "", value).upper()
+        if re.fullmatch(r"[A-Z]{2}[0-9A-Z]{10,34}", iban):
+            score += 8.0
+        elif re.fullmatch(r"[A-Z]{2}[0-9A-Z*]{10,34}", re.sub(r"[^A-Za-z0-9*]", "", value).upper()):
+            score += 5.0
+        else:
+            score -= 4.0
+
+    if field_name == "BIC":
+        bic = re.sub(r"[^A-Za-z0-9]", "", value).upper()
+        if re.fullmatch(r"[A-Z0-9]{8}([A-Z0-9]{3})?", bic):
+            score += 6.0
+        else:
+            score -= 2.0
+
+    if field_name in {"BTC Address", "ETH Address", "LTC Address"}:
+        addr = re.sub(r"\s+", "", value)
+        if len(addr) >= 16 and re.search(r"[A-Za-z0-9]", addr):
+            score += 4.5
+        else:
+            score -= 3.0
+
+    if field_name == "VIN":
+        vin = re.sub(r"[^A-Za-z0-9]", "", value).upper()
+        if re.fullmatch(r"[A-HJ-NPR-Z0-9]{17}", vin):
+            score += 7.0
+        elif len(vin) >= 12 and has_digits and has_letters:
+            score += 2.0
+        else:
+            score -= 3.0
+
+    if field_name == "Postal":
+        if re.fullmatch(r"[A-Za-z0-9\- ]{3,10}", value) and has_digits:
+            score += 4.0
+        elif has_digits:
+            score += 1.0
+        else:
+            score -= 2.5
+
+    if field_name in {"Last Txn Amount", "Unit Price", "Coupon", "Invested Amount"} and has_letters:
+        score -= 4.0
+
+    return score
 
 
-async def _process_single_image(url: str) -> Dict[str, str]:
+def _extract_ocr_lines(image: Image.Image) -> list[Dict[str, Any]]:
+    if ocr_engine is None:
+        return _extract_ocr_lines_tesseract(image)
+
     try:
-        # Extreme timeout for slow servers
-        response = requests.get(url, stream=True, timeout=300)
-        response.raise_for_status()
+        img_np = np.array(image.convert("RGB"))
+        results = ocr_engine.predict(img_np)
+        if not results:
+            return []
 
-        img = Image.open(io.BytesIO(response.content)).convert("RGB")
+        lines: list[Dict[str, Any]] = []
+        for res in results:
+            texts = res.get("rec_texts", [])
+            scores = res.get("rec_scores", [])
+            polys = res.get("dt_polys", [])
+            for i, text in enumerate(texts):
+                cleaned = str(text).strip()
+                if not cleaned:
+                    continue
+                score = float(scores[i]) if i < len(scores) else 0.0
+                if score < 0.20:
+                    continue
 
-        text = extract_text_with_paddle(img)
+                x_left = 0.0
+                y_top = 0.0
+                if i < len(polys):
+                    poly = np.array(polys[i], dtype=np.float32)
+                    if poly.size:
+                        x_left = float(np.min(poly[:, 0]))
+                        y_top = float(np.min(poly[:, 1]))
 
-        if not text.strip():
-            raise Exception("No text detected by OCR")
+                lines.append({
+                    "text": cleaned,
+                    "score": score,
+                    "x": x_left,
+                    "y": y_top,
+                })
 
-        parsed_data = parse_ocr_text(text)
-        print(f"DEBUG: Final Flat Data: {parsed_data}")
-        return parsed_data
+        lines.sort(key=lambda d: (d["y"], d["x"]))
+        return lines
 
     except Exception as e:
-        logger.error(f"OCR Failed: {e}")
-        raise e
+        logger.error(f"OCR extraction failed: {e}")
+        # Paddle can fail in some container runtimes; use Tesseract as fallback.
+        fallback_lines = _extract_ocr_lines_tesseract(image)
+        logger.info(f"Tesseract fallback lines: {len(fallback_lines)}")
+        return fallback_lines
 
-# ---------------------------------------------------
-# API ENDPOINT
-# ---------------------------------------------------
-@app.post("/api/scrape")
-async def scrape_endpoint(request: ScrapeRequest):
+
+def _extract_ocr_lines_tesseract(image: Image.Image) -> list[Dict[str, Any]]:
+    def _to_lines(img: Image.Image, psm: int) -> list[Dict[str, Any]]:
+        data = pytesseract.image_to_data(
+            img,
+            output_type=pytesseract.Output.DICT,
+            config=f"--oem 3 --psm {psm}",
+        )
+        count = len(data.get("text", []))
+        grouped: dict[tuple[int, int, int], list[dict[str, Any]]] = {}
+        for i in range(count):
+            text = str(data["text"][i]).strip()
+            if not text:
+                continue
+            conf_raw = str(data.get("conf", ["-1"])[i]).strip()
+            try:
+                conf_val = float(conf_raw)
+            except Exception:
+                conf_val = -1.0
+            if conf_val < 10:
+                continue
+            block = int(data.get("block_num", [0])[i])
+            par = int(data.get("par_num", [0])[i])
+            line = int(data.get("line_num", [0])[i])
+            key = (block, par, line)
+            grouped.setdefault(key, []).append({
+                "text": text,
+                "conf": conf_val,
+                "x": float(data.get("left", [0])[i]),
+                "y": float(data.get("top", [0])[i]),
+            })
+
+        out: list[Dict[str, Any]] = []
+        for words in grouped.values():
+            words = sorted(words, key=lambda w: w["x"])
+            line_text = " ".join(w["text"] for w in words).strip()
+            if not line_text:
+                continue
+            out.append({
+                "text": line_text,
+                "score": sum(w["conf"] for w in words) / (100.0 * len(words)),
+                "x": min(w["x"] for w in words),
+                "y": min(w["y"] for w in words),
+            })
+        return out
+
     try:
-        scraped_data = scraper.scrape_url(request.url)
-        unique_links = scraped_data.get("__metadata__", {}).get("unique_links", 0)
-        data = {k: v for k, v in scraped_data.items() if k != "__metadata__"}
-        
-        print(f"DEBUG: Scraped flat data keys: {list(data.keys())}")
-        nested_response = nest_data(data)
-        print("DEBUG: Final Nested JSON generated.")
-        
+        rgb = image.convert("RGB")
+        gray = rgb.convert("L")
+        enhanced = ImageEnhance.Contrast(gray).enhance(2.0)
+        upscaled = enhanced.resize((rgb.width * 2, rgb.height * 2), Image.Resampling.BICUBIC)
+        binarized = upscaled.point(lambda p: 255 if p > 165 else 0, mode="1").convert("L")
+
+        merged: list[Dict[str, Any]] = []
+        for img in (rgb, upscaled, binarized):
+            merged.extend(_to_lines(img, psm=6))
+            merged.extend(_to_lines(img, psm=11))
+
+        # De-duplicate near-identical lines from multi-pass OCR.
+        dedup: list[Dict[str, Any]] = []
+        seen: set[tuple[str, int]] = set()
+        for item in sorted(merged, key=lambda d: (-d["score"], d["y"], d["x"])):
+            key = (re.sub(r"\s+", " ", item["text"].lower()).strip(), int(item["y"] // 4))
+            if key in seen:
+                continue
+            seen.add(key)
+            dedup.append(item)
+
+        dedup.sort(key=lambda d: (d["y"], d["x"]))
+        return dedup
+    except Exception as fallback_error:
+        logger.error(f"Tesseract fallback failed: {fallback_error}")
+        return []
+
+
+def _extract_ocr_lines_from_image(image: Image.Image, min_score: float = 0.20) -> list[Dict[str, Any]]:
+    lines = _extract_ocr_lines(image)
+    return [ln for ln in lines if ln.get("score", 0.0) >= min_score]
+
+
+def _backfill_legal_advisors_from_image(image: Image.Image, fields: Dict[str, str]) -> None:
+    missing_keys = [
+        "account_advisor___contact",
+        "account_advisor___address",
+        "assets_manager___contact",
+        "assets_manager___address",
+        "investment_advisor___manager_id",
+        "investment_advisor___name",
+        "investment_advisor___contact",
+        "investment_advisor___address",
+        "insurance_manager___manager_id",
+        "insurance_manager___name",
+        "insurance_manager___contact",
+        "insurance_manager___address",
+    ]
+    if all(fields.get(k, "").strip() for k in missing_keys):
+        return
+
+    w, h = image.size
+    y0 = int(h * 0.66)
+    legal_crop = image.crop((0, y0, w, h))
+
+    # Fast fallback: single enhanced pass to avoid multiple OCR re-runs.
+    enhanced = ImageEnhance.Contrast(legal_crop).enhance(1.6)
+    upscaled = enhanced.resize((w * 2, max(2, (h - y0) * 2)), Image.Resampling.BICUBIC)
+    lines = _extract_ocr_lines_from_image(upscaled, min_score=0.18)
+    best_lines = [item["text"].strip() for item in lines if item["text"].strip()]
+
+    if not best_lines:
+        return
+
+    temp_fields: Dict[str, str] = {}
+    temp_scores: Dict[str, float] = {}
+    _extract_advisor_fields_from_lines(best_lines, temp_fields, temp_scores)
+
+    for key in missing_keys:
+        if fields.get(key, "").strip():
+            continue
+        candidate = temp_fields.get(key, "").strip()
+        if candidate:
+            fields[key] = candidate
+
+
+def extract_text_with_paddle(image: Image.Image) -> str:
+    lines = _extract_ocr_lines(image)
+    return "\n".join(line["text"] for line in lines)
+
+
+def _rows_from_ocr_lines(ocr_lines: list[Dict[str, Any]], image_width: int) -> list[Dict[str, Any]]:
+    if not ocr_lines:
+        return []
+
+    rows: list[list[Dict[str, Any]]] = []
+    for line in sorted(ocr_lines, key=lambda d: (d["y"], d["x"])):
+        if not rows:
+            rows.append([line])
+            continue
+        prev_y = rows[-1][-1]["y"]
+        if abs(line["y"] - prev_y) <= 12:
+            rows[-1].append(line)
+        else:
+            rows.append([line])
+
+    # Template has a narrow left label column; keep cutoff conservative.
+    split_x = image_width * 0.28
+    table_rows: list[Dict[str, Any]] = []
+    for row in rows:
+        row = sorted(row, key=lambda d: d["x"])
+        left_parts = [r["text"] for r in row if r["x"] <= split_x]
+        right_parts = [r["text"] for r in row if r["x"] > split_x]
+        table_rows.append({
+            "left": " ".join(left_parts).strip(),
+            "right": " ".join(right_parts).strip(),
+        })
+    return table_rows
+
+
+def _find_nearby_value(lines: list[str], label: str, max_lookahead: int = 3, max_lookbehind: int = 2) -> str:
+    target = _normalize_label(label)
+    for i, line in enumerate(lines):
+        if _normalize_label(line) != target:
+            continue
+        candidates = []
+        for j in range(max(0, i - max_lookbehind), min(len(lines), i + max_lookahead + 1)):
+            if j == i:
+                continue
+            candidate = lines[j].strip()
+            if not candidate:
+                continue
+            if _looks_like_header_or_label(candidate, None):
+                continue
+            candidates.append(candidate)
+        if candidates:
+            best = max(candidates, key=lambda c: _score_value(label, c))
+            if _score_value(label, best) >= 0.5:
+                return best
+    return ""
+
+
+def _find_value_after_label(lines: list[str], label: str, max_lookahead: int = 4) -> str:
+    target = _normalize_label(label)
+    for i, line in enumerate(lines):
+        if _normalize_label(line) != target:
+            continue
+        for j in range(i + 1, min(len(lines), i + max_lookahead + 1)):
+            candidate = lines[j].strip()
+            if not candidate:
+                continue
+            if _looks_like_header_or_label(candidate, None):
+                break
+            return candidate
+    return ""
+
+
+def _find_personal_contact(lines: list[str]) -> str:
+    upper = len(lines)
+    for i, line in enumerate(lines):
+        if _normalize_label(line) == "accountinformation":
+            upper = i
+            break
+    for i in range(upper):
+        if _normalize_label(lines[i]) == "contact" and i + 1 < upper:
+            cand = lines[i + 1].strip()
+            if cand and _is_phone_like(cand):
+                return cand
+    return ""
+
+
+def _apply_template_fixes(fields: Dict[str, str], lines: list[str]) -> None:
+    bond_name_after = _find_value_after_label(lines, "Bond Name")
+    bond_class_after = _find_value_after_label(lines, "Bond Class")
+    coupon_after = _find_value_after_label(lines, "Coupon")
+    invested_after = _find_value_after_label(lines, "Invested Amount")
+    if bond_name_after:
+        fields["bond_name"] = bond_name_after
+    if bond_class_after:
+        fields["bond_class"] = bond_class_after
+    if coupon_after and re.search(r"\d", coupon_after):
+        fields["coupon"] = coupon_after
+    if invested_after and re.search(r"\d", invested_after):
+        fields["invested_amount"] = invested_after
+
+    account_info_idx = -1
+    for i, line in enumerate(lines):
+        if _normalize_label(line) == "accountinformation":
+            account_info_idx = i
+            break
+
+    essential_after_label = {
+        "gender": "Gender",
+        "dob": "DOB",
+        "ssn": "SSN",
+        "address_1": "Address 1",
+        "email": "Email",
+        "a_c_type": "A/c Type",
+        "iban": "IBAN",
+        "cc_no": "cC_No",
+        "last_txn_amount": "Last Txn Amount",
+        "maturity_date": "Maturity Date",
+        "bond_name": "Bond Name",
+        "bond_class": "Bond Class",
+        "department": "Department",
+        "ean13": "Ean13",
+        "product_name": "Product Name",
+        "buying_ipv4": "Buying IPv4",
+        "buying_ipv6": "Buying IPv6",
+        "type": "Type",
+        "model": "Model",
+        "manufacture": "Manufacturer",
+        "vin": "VIN",
+        "ins_no": "INS No.",
+    }
+    for k, label in essential_after_label.items():
+        if not fields.get(k):
+            v = _find_value_after_label(lines, label)
+            if v:
+                fields[k] = v
+
+    # Values that often appear immediately before their labels.
+    for i, line in enumerate(lines):
+        norm = _normalize_label(line)
+        if norm == "ein" and i - 1 >= 0 and not fields.get("ein"):
+            prev = lines[i - 1].strip()
+            if prev and not _looks_like_header_or_label(prev, None):
+                fields["ein"] = prev
+        if norm == "ean13" and i - 1 >= 0 and not fields.get("ean13"):
+            prev = lines[i - 1].strip()
+            if re.fullmatch(r"\d{8,14}", re.sub(r"\D", "", prev)):
+                fields["ean13"] = prev
+        if norm == "buyingipv4" and i - 1 >= 0 and not fields.get("buying_ipv4"):
+            prev = lines[i - 1].strip()
+            if re.fullmatch(r"(?:\d{1,3}\.){3}\d{1,3}", prev):
+                fields["buying_ipv4"] = prev
+        if norm == "ethaddress" and not fields.get("eth_address"):
+            for j in range(max(0, i - 2), i):
+                prev = lines[j].strip()
+                if prev and not _looks_like_header_or_label(prev, None):
+                    if prev.startswith("0x") or prev.startswith("@x"):
+                        fields["eth_address"] = prev.replace("@", "0")
+                        break
+        if norm == "bs" and not fields.get("bs"):
+            v = _find_value_after_label(lines, "BS")
+            if v and not _looks_like_header_or_label(v, None):
+                fields["bs"] = v
+
+    # Split-label pattern: Last Txn + Amount, with numeric value just above.
+    for i, line in enumerate(lines):
+        if _normalize_label(line) == "lasttxn" and i + 1 < len(lines) and _normalize_label(lines[i + 1]) == "amount":
+            if i - 1 >= 0 and re.search(r"\d", lines[i - 1]):
+                fields["last_txn_amount"] = lines[i - 1].strip()
+                break
+    if fields.get("last_txn_amount", "").lower().find("date") != -1:
+        fields["last_txn_amount"] = ""
+
+    # Split-label pattern: Invested + <value> + Amount.
+    for i, line in enumerate(lines):
+        if _normalize_label(line) == "invested":
+            if i + 1 < len(lines) and re.search(r"\d", lines[i + 1]):
+                fields["invested_amount"] = lines[i + 1].strip()
+                break
+        if _normalize_label(line) == "investedamount":
+            v = _find_value_after_label(lines, line)
+            if v and re.search(r"\d", v):
+                fields["invested_amount"] = v
+                break
+
+    # Inline patterns in OCR text.
+    for line in lines:
+        m = re.match(r"(?i)^\s*last\s*txn\s*date\s+(.+)$", line.strip())
+        if m and not fields.get("last_txn_date"):
+            fields["last_txn_date"] = m.group(1).strip()
+        m2 = re.match(r"(?i)^\s*maturity\s*date\s+(.+)$", line.strip())
+        if m2 and not fields.get("maturity_date"):
+            fields["maturity_date"] = m2.group(1).strip()
+
+    if not fields.get("a_c_name"):
+        v = _find_value_after_label(lines, "A/c Name")
+        if v and not re.search(r"\*{2,}\d{2,}", v) and not _looks_like_header_or_label(v, None):
+            fields["a_c_name"] = v
+
+    if not fields.get("beneficiary_identifier_id"):
+        v = _find_value_after_label(lines, "Beneficiary")
+        if v and not _looks_like_header_or_label(v, None):
+            fields["beneficiary_identifier_id"] = v
+
+    if not re.search(r"\b[A-Za-z]{2,}\s+[A-Za-z]{2,}\b", fields.get("full_name", "")) or "information" in fields.get("full_name", "").lower():
+        v = _find_nearby_value(lines, "Full Name")
+        if v:
+            fields["full_name"] = v
+
+    # Prefer contact found before Account Information (Personal Info section).
+    personal_contact = _find_personal_contact(lines)
+    if personal_contact:
+        fields["contact"] = personal_contact
+
+    v_contact = _find_nearby_value(lines, "Contact")
+    if not fields.get("contact") and v_contact and _is_phone_like(v_contact):
+        fields["contact"] = v_contact
+
+    if not re.fullmatch(r"\d{6,}", re.sub(r"\D", "", fields.get("customer_id", ""))):
+        v = _find_nearby_value(lines, "Customer ID")
+        if re.fullmatch(r"\d{6,}", re.sub(r"\D", "", v)):
+            fields["customer_id"] = v
+
+    if (not fields.get("address_2")) or fields.get("address_2", "").lower() == fields.get("address_1", "").lower():
+        v = _find_value_after_label(lines, "Address 2")
+        if v:
+            fields["address_2"] = v
+
+    if (not fields.get("city")) or re.search(r"\bapt\b|\bsuite\b", fields.get("city", ""), re.IGNORECASE):
+        v = _find_value_after_label(lines, "city")
+        if v:
+            fields["city"] = v
+
+    if not re.fullmatch(r"\d{9}", re.sub(r"\D", "", fields.get("ssn", ""))):
+        v = _find_nearby_value(lines, "SSN")
+        if re.fullmatch(r"\d{9}", re.sub(r"\D", "", v)):
+            fields["ssn"] = v
+
+    if not fields.get("a_c_number"):
+        v = _find_nearby_value(lines, "A/c Number")
+        if v:
+            fields["a_c_number"] = v
+
+    if not re.fullmatch(r"\d+(?:\.\d{1,2})?", fields.get("coupon", "")):
+        v = _find_nearby_value(lines, "Coupon")
+        if re.fullmatch(r"\d+(?:\.\d{1,2})?", v):
+            fields["coupon"] = v
+
+    if not re.fullmatch(r"\d+(?:\.\d{1,2})?", fields.get("invested_amount", "")):
+        v = _find_nearby_value(lines, "Invested Amount")
+        if re.fullmatch(r"\d+(?:\.\d{1,2})?", v):
+            fields["invested_amount"] = v
+
+    if not fields.get("purchase_token"):
+        v = _find_value_after_label(lines, "Purchase Token")
+        if v:
+            fields["purchase_token"] = v
+
+    btc_v = _find_value_after_label(lines, "BTC Address")
+    eth_v = _find_value_after_label(lines, "ETH Address")
+    ltc_v = _find_value_after_label(lines, "LTC Address")
+    if btc_v:
+        fields["btc_address"] = btc_v
+    if eth_v:
+        fields["eth_address"] = eth_v
+    if ltc_v:
+        fields["ltc_address"] = ltc_v
+
+    # Avoid misplacing BTC into ETH and IPv6 into purchase token.
+    if fields.get("eth_address") and fields.get("btc_address") and fields["eth_address"] == fields["btc_address"]:
+        fields["eth_address"] = ""
+    if fields.get("purchase_token") and re.fullmatch(r"[0-9a-fA-F:.*]{8,}", fields["purchase_token"]):
+        fields["purchase_token"] = ""
+
+    # If Department looks like Ean13 and Ean13 is empty, move it.
+    dep_digits = re.sub(r"\D", "", fields.get("department", ""))
+    if len(dep_digits) in {12, 13, 14} and not fields.get("ean13"):
+        fields["ean13"] = fields.get("department", "")
+        fields["department"] = ""
+    if fields.get("ean13") and fields.get("department"):
+        ean_digits = re.sub(r"\D", "", fields.get("ean13", ""))
+        dep_digits = re.sub(r"\D", "", fields.get("department", ""))
+        if ean_digits and ean_digits == dep_digits:
+            fields["department"] = ""
+
+    # Prevent Bond Name from incorrectly taking Bond Class value.
+    if fields.get("bond_name") and fields.get("bond_class"):
+        if fields["bond_name"].strip() == fields["bond_class"].strip() and not bond_name_after:
+            fields["bond_name"] = ""
+    if _normalize_label(fields.get("bond_name", "")) in {"bondclass", "bondname"}:
+        fields["bond_name"] = ""
+
+    # Prevent Coupon from incorrectly taking Invested Amount value.
+    if fields.get("coupon") and fields.get("invested_amount"):
+        if fields["coupon"].strip() == fields["invested_amount"].strip() and not coupon_after:
+            fields["coupon"] = ""
+
+    # BS/EIN correction when BS accidentally picks EIN-like token.
+    if fields.get("bs") and _is_id_like(fields["bs"]):
+        for i, line in enumerate(lines):
+            if _normalize_label(line) == "bs" and i - 1 >= 0:
+                prev = lines[i - 1].strip()
+                if prev and not _looks_like_header_or_label(prev, None):
+                    fields["bs"] = prev
+                    break
+    if fields.get("bs") and fields.get("ein") and fields["bs"] == fields["ein"]:
+        for i, line in enumerate(lines):
+            if _normalize_label(line) == "bs" and i - 1 >= 0:
+                prev = lines[i - 1].strip()
+                if prev and not _looks_like_header_or_label(prev, None) and not _is_id_like(prev):
+                    fields["bs"] = prev
+                    break
+
+    # Avoid section-title bleed into IPv6.
+    if _normalize_label(fields.get("buying_ipv6", "")) in {"vehicle", "vehicledetail", "detail"}:
+        fields["buying_ipv6"] = ""
+
+    # VIN often appears just before Insurance label.
+    if not fields.get("vin"):
+        for i, line in enumerate(lines):
+            if _normalize_label(line) == "insurance" and i - 1 >= 0:
+                prev = re.sub(r"[^A-Za-z0-9]", "", lines[i - 1]).upper()
+                if len(prev) == 17 and re.search(r"[A-Z]", prev) and re.search(r"\d", prev):
+                    fields["vin"] = prev
+                    break
+
+    # Support OCR where label and value are in the same line.
+    for line in lines:
+        m = re.match(r"(?i)^\s*skll\s+description\s+(.+)$", line.strip())
+        if m and m.group(1).strip():
+            fields["skill_description"] = m.group(1).strip()
+            break
+
+    # Support OCR split pattern: "skll" + value lines + "Description".
+    if not fields.get("skill_description"):
+        for i, line in enumerate(lines):
+            norm = _normalize_label(line)
+            if norm not in {"skll", "skill", "sklldescription", "skilldescription"}:
+                continue
+            chunks = []
+            for j in range(i + 1, min(len(lines), i + 6)):
+                cand = lines[j].strip()
+                cand_norm = _normalize_label(cand)
+                if not cand:
+                    continue
+                if cand_norm == "description":
+                    break
+                if _looks_like_header_or_label(cand, None):
+                    break
+                chunks.append(cand)
+            if chunks:
+                fields["skill_description"] = " ".join(chunks).strip()
+                break
+
+    if not re.fullmatch(r"[A-Za-z0-9$]{8,}", re.sub(r"\s+", "", fields.get("account_advisor___advisor_id", ""))):
+        v = _find_nearby_value(lines, "Advisor ID")
+        if re.fullmatch(r"[A-Za-z0-9$]{8,}", re.sub(r"\s+", "", v)):
+            fields["account_advisor___advisor_id"] = v
+
+    if not fields.get("beneficiary_identifier_id"):
+        v = _find_nearby_value(lines, "Beneficiary")
+        if v and not _looks_like_header_or_label(v, None):
+            fields["beneficiary_identifier_id"] = v
+
+    # Remove placeholder label bleed-through in advisor sections.
+    cleanup_keys = [
+        "assets_manager___name",
+        "assets_manager___contact",
+        "investment_advisor___name",
+        "investment_advisor___manager_id",
+        "investment_advisor___contact",
+        "insurance_manager___name",
+    ]
+    for key in cleanup_keys:
+        val = fields.get(key, "")
+        if val and _looks_like_header_or_label(val, None):
+            fields[key] = ""
+
+
+def _is_phone_like(value: str) -> bool:
+    v = value.strip()
+    if not v:
+        return False
+    # Allow digits, separators and extension markers only.
+    if re.search(r"[^0-9\+\-\(\)\.\sxX]", v):
+        return False
+    digits = re.sub(r"\D", "", v)
+    # Support masked phone patterns like +1 (xxx) xxx 3853.
+    if len(digits) < 7:
+        if "x" in v.lower() and len(digits) >= 4:
+            return True
+        return False
+    # Must look like an actual phone format.
+    return any(ch in v for ch in "+-(). xX")
+
+
+def _is_id_like(value: str) -> bool:
+    raw = value.strip()
+    if not raw:
+        return False
+    if any(ch in raw for ch in [",", ".", ":", ";", "/"]):
+        return False
+    if " " in raw:
+        return False
+    if not re.fullmatch(r"[A-Za-z0-9$]{8,24}", raw):
+        return False
+    return bool(re.search(r"[A-Za-z]", raw) and re.search(r"\d", raw))
+
+
+def _is_address_like(value: str) -> bool:
+    v = value.strip()
+    if not v:
+        return False
+    if "," in v:
+        return True
+    if _is_phone_like(v) or _is_id_like(v):
+        return False
+    words = re.findall(r"[A-Za-z]{2,}", v)
+    return len(words) >= 2
+
+
+def _extract_advisor_fields_from_lines(lines: list[str], fields: Dict[str, str], best_scores: Dict[str, float]) -> None:
+    section_order = [
+        ("Account Advisor", "Advisor ID"),
+        ("Assets Manager", "Advisor ID"),
+        ("Investment Advisor", "Manager ID"),
+        ("Insurance Manager", "Manager ID"),
+    ]
+    section_indices: list[tuple[int, str, str]] = []
+    for i, line in enumerate(lines):
+        for section_name, id_label in section_order:
+            if _normalize_label(line) == _normalize_label(section_name):
+                section_indices.append((i, section_name, id_label))
+
+    for idx, (start, section_name, id_label) in enumerate(section_indices):
+        end = len(lines)
+        if idx + 1 < len(section_indices):
+            end = section_indices[idx + 1][0]
+        block = [ln.strip() for ln in lines[start + 1:end] if ln.strip()]
+        if not block:
+            continue
+
+        labels = {"advisorid", "managerid", "name", "contact", "address"}
+        explicit: Dict[str, str] = {}
+
+        i = 0
+        while i < len(block):
+            token = block[i]
+            norm = _normalize_label(token)
+            if norm in labels:
+                vals: list[str] = []
+                j = i + 1
+                while j < len(block):
+                    nxt = block[j].strip()
+                    nxt_norm = _normalize_label(nxt)
+                    if nxt_norm in labels:
+                        break
+                    if _normalize_label(nxt) in {_normalize_label(s[0]) for s in section_order}:
+                        break
+                    vals.append(nxt)
+                    j += 1
+                if vals:
+                    clean_vals = [v for v in vals if not _looks_like_header_or_label(v, None)]
+                    if norm == "address":
+                        if clean_vals:
+                            addr_val = " ".join(clean_vals).strip()
+                            if i - 1 >= 0:
+                                prev_addr = block[i - 1].strip()
+                                if prev_addr and not _looks_like_header_or_label(prev_addr, None) and "," in prev_addr:
+                                    if prev_addr not in addr_val:
+                                        addr_val = f"{prev_addr} {addr_val}".strip()
+                            explicit[norm] = addr_val
+                        elif i - 1 >= 0:
+                            prev_addr = block[i - 1].strip()
+                            if prev_addr and not _looks_like_header_or_label(prev_addr, None):
+                                explicit[norm] = prev_addr
+                    elif norm in {"advisorid", "managerid"}:
+                        if not clean_vals:
+                            i = j
+                            continue
+                        v0 = clean_vals[0]
+                        if _is_id_like(v0):
+                            explicit[norm] = v0
+                        elif "name" not in explicit and re.search(r"[A-Za-z]{2,}\s+[A-Za-z]{2,}", v0):
+                            # OCR may place name under Manager/Advisor ID when ID is absent.
+                            explicit["name"] = v0
+                    else:
+                        if not clean_vals:
+                            i = j
+                            continue
+                        v0 = clean_vals[0]
+                        if norm == "name" and _is_phone_like(v0):
+                            explicit["contact"] = v0
+                        else:
+                            explicit[norm] = v0
+                i = j
+                continue
+            i += 1
+
+        # Heuristic fills for OCR rows where label/value order gets swapped.
+        if "advisorid" not in explicit and "managerid" not in explicit and section_name != "Insurance Manager":
+            for token in block:
+                if _is_id_like(token):
+                    explicit["advisorid" if id_label == "Advisor ID" else "managerid"] = token
+                    break
+        if section_name == "Insurance Manager" and "managerid" not in explicit:
+            for token in block:
+                if _is_id_like(token):
+                    explicit["managerid"] = token
+                    break
+        if "name" not in explicit:
+            for token in block:
+                if _looks_like_header_or_label(token, None):
+                    continue
+                if _is_phone_like(token) or _is_id_like(token):
+                    continue
+                if "," in token:
+                    continue
+                if re.search(r"[A-Za-z]{2,}\s+[A-Za-z]{2,}", token):
+                    explicit["name"] = token
+                    break
+        if "contact" not in explicit:
+            for token in block:
+                if _looks_like_header_or_label(token, None):
+                    continue
+                if _is_phone_like(token):
+                    explicit["contact"] = token
+                    break
+        if "address" not in explicit:
+            address_parts = [t for t in block if "," in t]
+            if address_parts:
+                explicit["address"] = " ".join(address_parts).strip()
+
+        # OCR fallback: phone often appears right before "Contact" label.
+        contact_idx = -1
+        for ii, token in enumerate(block):
+            if _normalize_label(token) == "contact":
+                contact_idx = ii
+                break
+        if contact_idx > 0:
+            prev_token = block[contact_idx - 1].strip()
+            if (("contact" not in explicit) or (not _is_phone_like(explicit.get("contact", "")))) and _is_phone_like(prev_token):
+                explicit["contact"] = prev_token
+
+        # OCR fallback: Insurance Manager address may appear as trailing lines without label.
+        if section_name == "Insurance Manager" and "address" not in explicit and contact_idx != -1:
+            tail = [t.strip() for t in block[contact_idx + 1:] if t.strip()]
+            tail = [t for t in tail if not _looks_like_header_or_label(t, None)]
+            tail = [t for t in tail if t != explicit.get("name", "")]
+            tail = [t for t in tail if not _is_phone_like(t)]
+            if tail:
+                if len(tail) > 1:
+                    explicit["address"] = " ".join(tail).strip()
+                elif _is_address_like(tail[0]):
+                    explicit["address"] = tail[0]
+
+        if section_name == "Insurance Manager" and "address" not in explicit:
+            # Last-resort: keep trailing non-label token with mixed letters/digits
+            # (e.g., OCR like "00943 ol1io") as address.
+            rem = [t.strip() for t in block if t.strip() and not _looks_like_header_or_label(t, None)]
+            rem = [t for t in rem if t not in {explicit.get("name", ""), explicit.get("contact", ""), explicit.get("managerid", "")}]
+            rem = [t for t in rem if not _is_phone_like(t)]
+            for cand in reversed(rem):
+                if re.search(r"[A-Za-z]", cand) and (re.search(r"\d", cand) or "," in cand):
+                    explicit["address"] = cand
+                    break
+
+        candidates = {
+            f"{section_name} - {id_label}": explicit.get("advisorid" if id_label == "Advisor ID" else "managerid", ""),
+            f"{section_name} - Name": explicit.get("name", ""),
+            f"{section_name} - Contact": explicit.get("contact", ""),
+            f"{section_name} - Address": explicit.get("address", ""),
+        }
+        for field_name, value in candidates.items():
+            if not value:
+                continue
+            key = _field_key(field_name)
+            score = _score_value(field_name, value)
+            if score > best_scores.get(key, float("-inf")):
+                fields[key] = value
+                best_scores[key] = score
+
+    # Final sanitation for advisor fields.
+    for key, value in list(fields.items()):
+        if key.endswith("___advisor_id") or key.endswith("___manager_id"):
+            if value and (value.strip().lower() in {"advisor id", "manager id"} or not _is_id_like(value)):
+                fields[key] = ""
+        if key.endswith("___contact"):
+            if value and not _is_phone_like(value):
+                fields[key] = ""
+
+
+def _final_field_cleanup(fields: Dict[str, str]) -> None:
+    def _strip_prefix(value: str, label_patterns: list[str]) -> str:
+        out = value.strip()
+        for pat in label_patterns:
+            out = re.sub(pat, "", out, flags=re.IGNORECASE).strip()
+        return out
+
+    full_name = fields.get("full_name", "").strip()
+    if full_name and not re.fullmatch(r"[A-Za-z]{2,}(?:[ '-][A-Za-z]{2,})+", full_name):
+        fields["full_name"] = ""
+
+    b = fields.get("beneficiary_identifier_id", "").strip().lower()
+    if b in {"insurance", "identifier", "identifier id", "beneficiary"}:
+        fields["beneficiary_identifier_id"] = ""
+
+    normalize_at_keys = {
+        "iban", "bic", "isin", "vin", "customer_id",
+        "account_advisor___advisor_id", "assets_manager___advisor_id",
+        "investment_advisor___manager_id", "insurance_manager___manager_id",
+    }
+    for key in normalize_at_keys:
+        val = fields.get(key, "")
+        if val:
+            fields[key] = val.replace("@", "0")
+
+    # Personal contact must be phone-like.
+    if fields.get("contact") and not _is_phone_like(fields["contact"]):
+        fields["contact"] = ""
+
+    if fields.get("customer_id"):
+        cid = fields["customer_id"].strip()
+        cid = re.sub(r"[^0-9]", "", cid)
+        fields["customer_id"] = cid if len(cid) >= 8 else ""
+
+    if fields.get("a_c_type"):
+        clean_type = _strip_prefix(fields["a_c_type"], [r"^a\s*\/?\s*c\s*type[:\-]?\s*"])
+        if _looks_like_header_or_label(clean_type, None):
+            clean_type = ""
+        fields["a_c_type"] = clean_type
+
+    if fields.get("a_c_name"):
+        clean_name = _strip_prefix(fields["a_c_name"], [r"^a\s*\/?\s*c\s*name[:\-]?\s*"])
+        if _looks_like_header_or_label(clean_name, None):
+            clean_name = ""
+        if _normalize_label(clean_name) in {"invested", "amount", "investedamount"}:
+            clean_name = ""
+        fields["a_c_name"] = clean_name
+
+    if fields.get("skill_description"):
+        sk = fields["skill_description"]
+        sk = re.sub(r"(?i)\b(name|contact|address|advisor id|manager id)\b.*$", "", sk).strip()
+        if _looks_like_header_or_label(sk, None):
+            sk = ""
+        fields["skill_description"] = sk
+
+    # Advisor names must look like names, not labels/IDs/phones.
+    advisor_name_keys = [
+        "account_advisor___name",
+        "assets_manager___name",
+        "investment_advisor___name",
+        "insurance_manager___name",
+    ]
+    for k in advisor_name_keys:
+        v = fields.get(k, "").strip()
+        if not v:
+            continue
+        if v.lower() in {"advisor id", "manager id", "name", "contact", "address", "vame"}:
+            fields[k] = ""
+            continue
+        if _looks_like_header_or_label(v, None) or _is_id_like(v) or _is_phone_like(v):
+            fields[k] = ""
+
+    # Manufacturer should not take short/placeholder tokens like "IN".
+    mfg = fields.get("manufacture", "").strip()
+    if mfg:
+        if mfg.lower() in {"in", "manufacturer", "model", "type"}:
+            fields["manufacture"] = ""
+        elif re.fullmatch(r"[A-Za-z]{1,2}", mfg):
+            fields["manufacture"] = ""
+
+    # Model should not mirror manufacture or be placeholder garbage.
+    model = fields.get("model", "").strip()
+    if model:
+        if model.lower() in {"model", "manufacturer", "type", "in"}:
+            fields["model"] = ""
+        elif fields.get("manufacture", "").strip() and model.lower() == fields["manufacture"].strip().lower():
+            fields["model"] = ""
+        elif re.fullmatch(r"[A-Za-z]{1,2}", model):
+            fields["model"] = ""
+        elif re.fullmatch(r"\d{1,2}", model):
+            fields["model"] = ""
+
+    # Ean13 must be mostly numeric barcode length.
+    ean = fields.get("ean13", "").strip()
+    if ean:
+        digits = re.sub(r"\D", "", ean)
+        if len(digits) not in {12, 13, 14}:
+            fields["ean13"] = ""
+
+
+# ---------------------------------------------------------
+# Structured Field Extraction
+# ---------------------------------------------------------
+def extract_structured_fields(text: str, ocr_lines: list[Dict[str, Any]] | None = None, image_width: int | None = None) -> Dict[str, Any]:
+    fields: Dict[str, str] = {}
+    best_scores: Dict[str, float] = {}
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    current_advisor_section: str | None = None
+    label_occurrences: list[tuple[int, str, str | None]] = []
+
+    # Fast path for fixed-form table layout (higher accuracy + faster than regex walk).
+    if ocr_lines is not None and image_width is not None:
+        rows = _rows_from_ocr_lines(ocr_lines, image_width)
+        i = 0
+        while i < len(rows):
+            left = rows[i]["left"].strip()
+            right = rows[i]["right"].strip()
+            left_lower = left.lower()
+
+            for section_norm, section_original in ADVISOR_SECTIONS.items():
+                if difflib.SequenceMatcher(a=left_lower, b=section_norm).ratio() >= 0.86:
+                    current_advisor_section = section_original
+                    break
+
+            field_name = _find_best_label(left, current_advisor_section) if left else None
+            if field_name:
+                candidates = []
+                if right:
+                    candidates.append(right)
+                if i > 0:
+                    prev_left = rows[i - 1]["left"].strip()
+                    prev_right = rows[i - 1]["right"].strip()
+                    if prev_right and not _find_best_label(prev_left, current_advisor_section):
+                        candidates.append(prev_right)
+
+                # Multi-line value continuation (mostly addresses).
+                j = i + 1
+                continuation_parts = []
+                while j < len(rows):
+                    next_left = rows[j]["left"].strip()
+                    next_right = rows[j]["right"].strip()
+                    if _find_best_label(next_left, current_advisor_section):
+                        break
+                    if next_left:
+                        break
+                    if next_right:
+                        continuation_parts.append(next_right)
+                        j += 1
+                        continue
+                    break
+
+                if continuation_parts:
+                    candidates.append(" ".join(continuation_parts).strip())
+                    if right:
+                        candidates.append((right + " " + " ".join(continuation_parts)).strip())
+
+                key = _field_key(field_name)
+                for candidate in candidates:
+                    if not candidate:
+                        continue
+                    score = _score_value(field_name, candidate)
+                    if score >= 0.5 and score > best_scores.get(key, float("-inf")):
+                        fields[key] = candidate
+                        best_scores[key] = score
+            i += 1
+
+        _apply_template_fixes(fields, lines)
+        _extract_advisor_fields_from_lines(lines, fields, best_scores)
+        placeholder_vals = {"advisor id", "manager id", "name", "contact", "address"}
+        for bad_key in ["assets_manager___name", "investment_advisor___name"]:
+            bad_val = fields.get(bad_key, "")
+            if bad_val and (bad_val.strip().lower() in placeholder_vals or _looks_like_header_or_label(bad_val, None)):
+                fields[bad_key] = ""
+        for field_name in FIELD_DEFINITIONS.keys():
+            key = _field_key(field_name)
+            fields.setdefault(key, "")
+        _final_field_cleanup(fields)
+        fields["raw_text"] = text
+        return fields
+
+    # Fallback parser for non-template images.
+    for i, line in enumerate(lines):
+        line_lower = line.lower().strip()
+
+        # Keep advisor section context for short labels like "Advisor ID".
+        for section_norm, section_original in ADVISOR_SECTIONS.items():
+            if difflib.SequenceMatcher(a=line_lower, b=section_norm).ratio() >= 0.86:
+                current_advisor_section = section_original
+                break
+
+        field_name = _find_best_label(line, current_advisor_section)
+        if not field_name:
+            # Handle "Label: Value" style lines.
+            inline_match = re.match(r"^\s*([^:]+?)\s*[:\-]\s*(.+)\s*$", line)
+            if inline_match:
+                maybe_label = inline_match.group(1).strip()
+                maybe_field = _find_best_label(maybe_label, current_advisor_section)
+                if maybe_field:
+                    candidate = inline_match.group(2).strip()
+                    key = _field_key(maybe_field)
+                    score = _score_value(maybe_field, candidate)
+                    if score > best_scores.get(key, float("-inf")):
+                        fields[key] = candidate
+                        best_scores[key] = score
+            continue
+        label_occurrences.append((i, field_name, current_advisor_section))
+
+    # Extract values from the region between one label and the next label.
+    for idx, (line_idx, field_name, section_ctx) in enumerate(label_occurrences):
+        next_line_idx = len(lines)
+        if idx + 1 < len(label_occurrences):
+            next_line_idx = label_occurrences[idx + 1][0]
+
+        for j in range(line_idx + 1, next_line_idx):
+            candidate = lines[j].strip()
+            if not candidate:
+                continue
+            if _looks_like_header_or_label(candidate, section_ctx):
+                continue
+
+            key = _field_key(field_name)
+            score = _score_value(field_name, candidate)
+            if score < 0.5:
+                continue
+            if score > best_scores.get(key, float("-inf")):
+                fields[key] = candidate
+                best_scores[key] = score
+
+        # Special fallback: some IDs appear immediately above label due OCR ordering.
+        key = _field_key(field_name)
+        if key not in fields and line_idx - 1 >= 0:
+            prev_candidate = lines[line_idx - 1].strip()
+            if prev_candidate and not _looks_like_header_or_label(prev_candidate, section_ctx):
+                prev_score = _score_value(field_name, prev_candidate)
+                if prev_score >= 3.5:
+                    fields[key] = prev_candidate
+                    best_scores[key] = prev_score
+
+    # Regex fallback for any still-missing field.
+    for field_name in FIELD_DEFINITIONS.keys():
+        key = _field_key(field_name)
+        if key in fields and fields[key]:
+            continue
+        pattern = rf"{re.escape(field_name)}\s*[:\-]?\s*(.+)"
+        match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
+        if match:
+            candidate = match.group(1).strip()
+            if not _looks_like_header_or_label(candidate, current_advisor_section) and _score_value(field_name, candidate) >= 0.5:
+                fields[key] = candidate
+
+    for field_name in FIELD_DEFINITIONS.keys():
+        key = _field_key(field_name)
+        fields.setdefault(key, "")
+
+    _extract_advisor_fields_from_lines(lines, fields, best_scores)
+    _final_field_cleanup(fields)
+    fields["raw_text"] = text
+    return fields
+
+
+def _merge_structured_fields(primary: Dict[str, Any], secondary: Dict[str, Any]) -> Dict[str, Any]:
+    merged = copy.deepcopy(primary)
+    for key, secondary_val in secondary.items():
+        if key == "raw_text":
+            continue
+        sec = str(secondary_val or "").strip()
+        pri = str(merged.get(key, "") or "").strip()
+        if not sec:
+            continue
+        if not pri:
+            merged[key] = sec
+            continue
+        field_name = KEY_TO_FIELD_NAME.get(key)
+        if not field_name:
+            continue
+        if _score_value(field_name, sec) > _score_value(field_name, pri):
+            merged[key] = sec
+    return merged
+
+
+# ---------------------------------------------------------
+# MAIN API
+# ---------------------------------------------------------
+async def process_image_url(url: str) -> Dict[str, Any]:
+    if not url.strip():
+        raise ValueError("URL is required")
+
+    try:
+        cached = _cache_get(url)
+        if cached is not None:
+            return cached
+
+        image = download_image(url)
+        result = process_image(image)
+        _cache_set(url, result)
+        return result
+
+    except Exception as e:
+        logger.error(f"Processing failed: {e}")
+        raise
+
+
+def process_image(image: Image.Image) -> Dict[str, Any]:
+    try:
+        ocr_lines = _extract_ocr_lines(image)
+        extracted_text = "\n".join(line["text"] for line in ocr_lines)
+
+        if not extracted_text.strip():
+            raise ValueError("No text detected")
+
+        structured_data = extract_structured_fields(extracted_text, ocr_lines=ocr_lines, image_width=image.width)
+        if OCR_ENGINE_MODE == "tesseract":
+            text_only_data = extract_structured_fields(extracted_text, ocr_lines=None, image_width=None)
+            structured_data = _merge_structured_fields(structured_data, text_only_data)
+        _backfill_legal_advisors_from_image(image, structured_data)
+        _final_field_cleanup(structured_data)
+
+        return structured_data
+
+    except Exception as e:
+        logger.error(f"Processing failed: {e}")
+        raise
+
+
+@app.post("/api/scrape")
+def scrape(request: ScrapeRequest):
+
+    if not request.url.strip():
+        return {"status": "error", "detail": "URL is required"}
+
+    try:
+        image = download_image(request.url)
+        structured_data = process_image(image)
+
         return {
             "status": "success",
-            "data": nested_response,
-            "metadata": {"unique_links": unique_links}
+            "method": "ocr",
+            "data": structured_data,
+            "metadata": {"unique_links": 0}
         }
 
-    except ValueError as ve:
-        if "IMAGE_URL_DETECTED" in str(ve) or "image" in str(ve).lower():
-            print(f"DEBUG: Image detected via ValueError: {ve}")
-            try:
-                data = await process_image_url(request.url)
-                print(f"DEBUG: OCR completed. Fields found: {list(data.keys())}")
-                nested_response = nest_data(data)
-                return {"status": "success", "data": nested_response, "method": "paddleocr"}
-            except Exception as e:
-                print(f"DEBUG: OCR Processing Exception: {e}")
-                return JSONResponse(
-                    status_code=400,
-                    content={"error": str(e)}
-                )
-        print(f"DEBUG: Other ValueError: {ve}")
-        return JSONResponse(
-            status_code=400,
-            content={"error": str(ve)}
-        )
-
     except Exception as e:
-        logger.error(f"Scraping failed: {e}")
-        return JSONResponse(
-            status_code=400,
-            content={"error": str(e)}
-        )
+        logger.error(f"Processing failed: {e}")
+        return {"status": "error", "detail": str(e)}
 
-# ---------------------------------------------------
-# Serve Frontend
-# ---------------------------------------------------
-app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")
 
-# ---------------------------------------------------
-# RUN
-# ---------------------------------------------------
+
+# ---------------------------------------------------------
+# Run Server
+# ---------------------------------------------------------
 if __name__ == "__main__":
-    logger.info("Starting WorkProof Server at http://localhost:8000")
+    import uvicorn
+    print("Starting WorkProof Server at http://localhost:8000")
     uvicorn.run(app, host="0.0.0.0", port=8000)

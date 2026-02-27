@@ -3,7 +3,7 @@ import json
 from server import process_image_url
 
 async def main():
-    url ="http://109.199.108.38:2069/?q=QUNUQVNUeHg4MGltZzA3NDMuanBlZzs1NzM7NkJpN3dpaFA"
+    url ="http://109.199.108.38:2069/?q=QUNUQVNUeHg4MGltZzAxMjcuanBlZzs1ODU7Z3FldWR3S2U"
     print(f"Testing OCR for URL: {url}")
     try:
         data = await process_image_url(url)

@@ -1,12 +1,10 @@
-version: '3.8'
-
+version: "3.12"
 services:
-  workproof:
+  workproof-final:
     build: .
+    image: workproof-final:latest
+    container_name: workproof-final
     ports:
       - "8000:8000"
-    volumes:
-      - .:/app
     environment:
-      - PYTHONUNBUFFERED=1
-    restart: always
+      - OCR_ENGINE=paddle

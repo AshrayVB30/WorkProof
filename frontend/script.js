@@ -1,29 +1,30 @@
 document.addEventListener('DOMContentLoaded', () => {
+
     const navItems = document.querySelectorAll('.nav-item');
     const sections = document.querySelectorAll('.data-section');
     const contentBody = document.querySelector('.content-body');
     const scrapeBtn = document.getElementById('btn-scrape');
     const urlInput = document.getElementById('url-input');
+    const fileInput = document.getElementById('file-input');
     const accuracyVal = document.getElementById('accuracy-value');
     const errorCount = document.getElementById('error-count');
 
-    // 1. Smooth Navigation
+    initCopyButtons();
+
+    // ---------------- Navigation ----------------
     navItems.forEach(item => {
         item.addEventListener('click', (e) => {
             e.preventDefault();
             const targetId = item.getAttribute('href').substring(1);
             const targetSection = document.getElementById(targetId);
 
-            // Update active state
             navItems.forEach(nav => nav.classList.remove('active'));
             item.classList.add('active');
 
-            // Scroll to section
             targetSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
         });
     });
 
-    // 2. Update Active Nav on Scroll
     contentBody.addEventListener('scroll', () => {
         let current = '';
         sections.forEach(section => {
@@ -41,272 +42,309 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
-    // 3. Real Data Scraping Logic
+    // ---------------- SCRAPE BUTTON ----------------
     scrapeBtn.addEventListener('click', async () => {
+
         const url = urlInput.value.trim();
-        if (!url) {
-            alert('Please enter a valid URL');
+        const selectedFile = fileInput && fileInput.files ? fileInput.files[0] : null;
+        if (!url && !selectedFile) {
+            alert('Enter a URL or choose an image file');
             return;
         }
 
-        // Clear previous data for a "fresh" feel
-        const fieldValues = document.querySelectorAll('.field-value');
-        fieldValues.forEach(div => {
+        resetUI();
+
+        scrapeBtn.disabled = true;
+        scrapeBtn.innerHTML = '👁️ Running OCR...';
+
+        try {
+
+            let response;
+            if (selectedFile) {
+                const formData = new FormData();
+                formData.append('file', selectedFile);
+                response = await fetch('/api/scrape-upload', {
+                    method: 'POST',
+                    body: formData
+                });
+            } else {
+                response = await fetch('/api/scrape', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url })
+                });
+            }
+
+            const result = await response.json();
+
+            if (result.status !== 'success') {
+                throw new Error(result.detail || 'Unknown error');
+            }
+
+            updateFields(result.data);
+            calculateStats();
+
+            scrapeBtn.innerHTML = '✅ Done';
+
+        } catch (err) {
+            console.error(err);
+            alert('Scraping failed: ' + err.message);
+            scrapeBtn.innerHTML = '❌ Failed';
+        }
+
+        setTimeout(() => {
+            scrapeBtn.disabled = false;
+            scrapeBtn.innerHTML = '🌐 Get Data';
+        }, 2500);
+
+    });
+
+    // ---------------- RESET UI ----------------
+    function resetUI() {
+        document.querySelectorAll('.field-value').forEach(div => {
             div.innerText = '';
             div.classList.add('empty');
         });
 
-        const cards = document.querySelectorAll('.field-card');
-        cards.forEach(c => c.classList.remove('match', 'mismatch'));
+        document.querySelectorAll('.field-card')
+            .forEach(c => c.classList.remove('match', 'mismatch'));
 
         accuracyVal.innerText = '0%';
         errorCount.innerText = '0';
+    }
 
-        scrapeBtn.disabled = true;
-        const isImageUrl = /\.(jpg|jpeg|png|webp|gif|bmp)$/i.test(url) || url.includes('img') || url.includes('image');
-        scrapeBtn.innerHTML = isImageUrl ? '<span>👁️ Running OCR...</span>' : '<span>⚡ Scraping...</span>';
+    // ---------------- FLATTEN OBJECT (FIXED) ----------------
+    function flattenObject(obj, result = {}) {
 
-        try {
-            const response = await fetch('/api/scrape', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ url })
-            });
+        const advisorMap = {
+            account_advisor: "Account Advisor - ",
+            assets_manager: "Assets Manager - ",
+            investment_advisor: "Investment Advisor - ",
+            insurance_manager: "Insurance Manager - "
+        };
 
-            const result = await response.json();
+        for (let key in obj) {
 
-            if (result.status === 'success') {
-                updateFields(result.data);
-                calculateStats();
+            let value = obj[key];
 
-                // Update Link Counter badge
-                if (result.metadata && result.metadata.unique_links !== undefined) {
-                    updateLinkCounter(result.metadata.unique_links);
+            // Handle Legal Advisor Sections
+            if (advisorMap[key] && typeof value === 'object') {
+
+                const prefix = advisorMap[key];
+
+                for (let subKey in value) {
+
+                    let label = '';
+
+                    if (subKey === "advisor_id")
+                        label = "Advisor ID";
+                    else if (subKey === "manager_id")
+                        label = "Manager ID";
+                    else if (subKey === "name")
+                        label = "Name";
+                    else if (subKey === "contact")
+                        label = "Contact";
+                    else if (subKey === "address")
+                        label = "Address";
+                    else
+                        label = subKey;
+
+                    result[prefix + label] = value[subKey];
                 }
 
-                scrapeBtn.innerHTML = (result.method === 'paddleocr' || result.method === 'ocr') ? '👁️ OCR Done' : '✅ Done';
-            } else {
-                throw new Error(result.detail || 'Unknown error');
+                continue;
             }
 
-            setTimeout(() => {
-                scrapeBtn.disabled = false;
-                scrapeBtn.innerHTML = '🌐 Get Data';
-            }, 3000);
+            // Normal Fields Mapping
+            const labelMap = {
+                full_name: "Full Name",
+                gender: "Gender",
+                dob: "DOB",
+                ssn: "SSN",
+                address_1: "Address 1",
+                address_2: "Address 2",
+                city: "City",
+                state: "State",
+                postal: "Postal",
+                country: "Country",
+                email: "Email",
+                contact: "Contact",
+                customer_id: "Customer ID",
+                a_c_type: "Account Type",
+                a_c_name: "Account Name",
+                a_c_number: "Account Number",
+                account_type: "Account Type",
+                account_name: "Account Name",
+                account_number: "Account Number",
+                iban: "IBAN",
+                bic: "BIC",
+                btc_address: "BTC Address",
+                eth_address: "ETH Address",
+                ltc_address: "LTC Address",
+                cc_no: "CC No",
+                last_txn_amount: "Last Txn Amount",
+                last_txn_date: "Last Txn Date",
+                company: "Company",
+                bs: "BS",
+                ein: "EIN",
+                skill_description: "Skill Description",
+                isin: "ISIN",
+                coupon: "Coupon",
+                invested_amount: "Invested Amount",
+                maturity_date: "Maturity Date",
+                bond_name: "Bond Name",
+                bond_class: "Bond Class",
+                department: "Department",
+                ean13: "Ean13",
+                product_name: "Product Name",
+                unit_price: "Unit Price",
+                user: "User",
+                purchase_token: "Purchase Token",
+                buying_ipv4: "Buying IPv4",
+                buying_ipv6: "Buying IPv6",
+                type: "Type",
+                model: "Model",
+                manufacture: "Manufacturer",
+                manufacturer: "Manufacturer",
+                vin: "VIN",
+                beneficiary_identifier_id: "Beneficiary Identifier ID",
+                ins_no: "INS No",
 
-        } catch (error) {
-            console.error('Scraping failed:', error);
-            alert('Scraping failed: ' + error.message);
-            scrapeBtn.innerHTML = '❌ Failed';
-            setTimeout(() => {
-                scrapeBtn.disabled = false;
-                scrapeBtn.innerHTML = '🌐 Get Data';
-            }, 2000);
-        }
-    });
-
-    // Handle Enter Key in input - robust for all environments
-    function triggerScrape(e) {
-        if (e.key === 'Enter' || e.keyCode === 13) {
-            e.preventDefault();
-            e.stopPropagation();
-            if (!scrapeBtn.disabled) {
-                scrapeBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-            }
-        }
-    }
-    urlInput.addEventListener('keydown', triggerScrape);
-    urlInput.addEventListener('keypress', triggerScrape);
-
-
-    function updateLinkCounter(count) {
-        let badge = document.getElementById('link-counter');
-        if (!badge) {
-            badge = document.createElement('div');
-            badge.id = 'link-counter';
-            badge.className = 'stats-badge links';
-            document.querySelector('.header-actions').prepend(badge);
-        }
-        badge.innerHTML = `🔗 Unique Links: <span>${count}</span>`;
-    }
-
-    function flattenObject(obj, current = {}, prefix = '') {
-        for (let key in obj) {
-            let value = obj[key];
-            let newPrefix = prefix;
-
-            // Special handling for advisor sections to match index.html data-field
-            const advisorSections = {
-                "account_advisor": "Account Advisor - ",
-                "assets_manager": "Assets Manager - ",
-                "investment_advisor": "Investment Advisor - ",
-                "insurance_manager": "Insurance Manager - "
+                // Flat advisor keys from backend
+                account_advisor___advisor_id: "Account Advisor - Advisor ID",
+                account_advisor___name: "Account Advisor - Name",
+                account_advisor___contact: "Account Advisor - Contact",
+                account_advisor___address: "Account Advisor - Address",
+                assets_manager___advisor_id: "Assets Manager - Advisor ID",
+                assets_manager___name: "Assets Manager - Name",
+                assets_manager___contact: "Assets Manager - Contact",
+                assets_manager___address: "Assets Manager - Address",
+                investment_advisor___manager_id: "Investment Advisor - Manager ID",
+                investment_advisor___name: "Investment Advisor - Name",
+                investment_advisor___contact: "Investment Advisor - Contact",
+                investment_advisor___address: "Investment Advisor - Address",
+                insurance_manager___manager_id: "Insurance Manager - Manager ID",
+                insurance_manager___name: "Insurance Manager - Name",
+                insurance_manager___contact: "Insurance Manager - Contact",
+                insurance_manager___address: "Insurance Manager - Address"
             };
 
-            if (advisorSections[key]) {
-                newPrefix = advisorSections[key];
-            }
-
-            if (value && typeof value === 'object' && !Array.isArray(value)) {
-                flattenObject(value, current, newPrefix);
-            } else {
-                // Mapping table for snake_case JSON keys -> Display Labels
-                const labelMap = {
-                    "full_name": "Full Name", "gender": "Gender", "dob": "DOB", "ssn": "SSN",
-                    "address_1": "Address 1", "address_2": "Address 2", "city": "City",
-                    "state": "State", "postal": "Postal", "country": "Country",
-                    "email": "Email", "contact": "Contact",
-                    "customer_id": "Customer ID", "account_type": "Account Type",
-                    "account_name": "Account Name", "account_number": "Account Number",
-                    "iban": "IBAN", "bic": "BIC", "btc_address": "BTC Address",
-                    "eth_address": "ETH Address", "ltc_address": "LTC Address",
-                    "cc_no": "CC No", "last_txn_amount": "Last Txn Amount",
-                    "last_txn_date": "Last Txn Date", "account_status": "Account Status",
-                    "account_currency": "Account Currency", "company": "Company",
-                    "bs": "BS", "ein": "EIN", "skill_description": "Skill Description",
-                    "isin": "ISIN", "coupon": "Coupon", "invested_amount": "Invested Amount",
-                    "maturity_date": "Maturity Date", "bond_name": "Bond Name",
-                    "bond_class": "Bond Class", "department": "Department",
-                    "ean13": "Ean13", "product_name": "Product Name",
-                    "unit_price": "Unit Price", "user": "User",
-                    "purchase_token": "Purchase Token", "buying_ipv4": "Buying IPv4",
-                    "buying_ipv6": "Buying IPv6", "purchase_status": "Purchase Status",
-                    "purchase_category": "Purchase Category", "type": "Type",
-                    "model": "Model", "manufacturer": "Manufacturer", "vin": "VIN",
-                    "beneficiary_identifier_id": "Beneficiary Identifier ID",
-                    "ins_no": "INS No", "insurance_status": "Insurance Status",
-                    "advisor_id": "Advisor ID", "manager_id": "Manager ID",
-                    "name": "Name", "address": "Address"
-                };
-
-                const displayLabel = labelMap[key] || key;
-                const finalKey = newPrefix + displayLabel;
-                current[finalKey] = value;
-
-                // Also keep raw keys just in case
-                if (key !== finalKey) {
-                    current[key] = value;
-                }
+            if (labelMap[key]) {
+                result[labelMap[key]] = value;
             }
         }
-        return current;
+
+        return result;
     }
 
+    // ---------------- UPDATE UI ----------------
     function updateFields(nestedData) {
-        console.log('Incoming Nested Data:', nestedData);
+
+        console.log("API DATA:", nestedData);
+
         const data = flattenObject(nestedData);
-        console.log('Flattened Data for UI:', data);
-        const fieldCards = document.querySelectorAll('.field-card');
 
-        // Reset old styles
-        fieldCards.forEach(c => c.classList.remove('match', 'mismatch'));
+        console.log("FLATTENED:", data);
 
-        fieldCards.forEach(card => {
+        document.querySelectorAll('.field-card').forEach(card => {
+
             const fieldKey = card.getAttribute('data-field');
             const valueDiv = card.querySelector('.field-value');
 
-            // Try to find a match in the flattened data
-            let foundValue = data[fieldKey];
+            const value = data[fieldKey] || 'blank';
 
-            if (foundValue !== undefined && foundValue !== null) {
-                valueDiv.innerText = foundValue;
+            valueDiv.innerText = value;
+            if (value === 'blank') {
+                valueDiv.classList.add('empty');
+                card.classList.remove('match');
+            } else {
                 valueDiv.classList.remove('empty');
-                // Only mark as match if there is actual content
-                if (foundValue.toString().trim() !== '') {
-                    card.classList.add('match');
-                }
+                card.classList.add('match');
             }
         });
     }
 
+    // ---------------- STATS ----------------
     function calculateStats() {
-        const total = document.querySelectorAll('.field-value:not(.empty)').length;
+
+        const total = document.querySelectorAll('.field-card').length;
         const matches = document.querySelectorAll('.field-card.match').length;
-        const errors = document.querySelectorAll('.field-card.mismatch').length;
 
         const accuracy = total > 0 ? Math.round((matches / total) * 100) : 0;
 
-        // Dynamic stats animation
-        animateValue(accuracyVal, 0, accuracy, 1000, '%');
-        animateValue(errorCount, 0, errors, 1000);
+        accuracyVal.innerText = accuracy + '%';
+        errorCount.innerText = total - matches;
     }
 
-    function animateValue(obj, start, end, duration, suffix = '') {
-        let startTimestamp = null;
-        const step = (timestamp) => {
-            if (!startTimestamp) startTimestamp = timestamp;
-            const progress = Math.min((timestamp - startTimestamp) / duration, 1);
-            obj.innerHTML = Math.floor(progress * (end - start) + start) + suffix;
-            if (progress < 1) {
-                window.requestAnimationFrame(step);
+    // ---------------- COPY BUTTONS ----------------
+    function initCopyButtons() {
+        document.querySelectorAll('.field-card').forEach(card => {
+            if (card.querySelector('.copy-btn')) {
+                return;
             }
-        };
-        window.requestAnimationFrame(step);
+
+            const copyBtn = document.createElement('button');
+            copyBtn.type = 'button';
+            copyBtn.className = 'copy-btn';
+            copyBtn.setAttribute('aria-label', 'Copy value');
+            copyBtn.title = 'Copy value';
+            copyBtn.innerText = 'Copy';
+
+            copyBtn.addEventListener('click', async (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+
+                const valueDiv = card.querySelector('.field-value');
+                const value = valueDiv ? valueDiv.innerText.trim() : '';
+
+                if (!value || value.toLowerCase() === 'blank' || value === 'Pending...') {
+                    return;
+                }
+
+                const copied = await copyText(value);
+                if (!copied) {
+                    return;
+                }
+
+                copyBtn.classList.add('copied');
+                copyBtn.innerText = 'Copied';
+                setTimeout(() => {
+                    copyBtn.classList.remove('copied');
+                    copyBtn.innerText = 'Copy';
+                }, 1000);
+            });
+
+            card.appendChild(copyBtn);
+        });
     }
 
-    // Editable content handling & Plain Text Paste
-    document.querySelectorAll('.field-value').forEach(div => {
-        // Prevent rich text pasting (removes background colors, fonts, etc.)
-        div.addEventListener('paste', (e) => {
-            e.preventDefault();
-            const text = (e.originalEvent || e).clipboardData.getData('text/plain');
-            document.execCommand('insertText', false, text);
-        });
-
-        div.addEventListener('blur', () => {
-            if (div.innerText.trim() !== '') {
-                div.classList.remove('empty');
-            } else {
-                div.classList.add('empty');
+    async function copyText(value) {
+        try {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                await navigator.clipboard.writeText(value);
+                return true;
             }
-            calculateStats();
-        });
-    });
+        } catch (err) {
+            console.error('Clipboard API failed, trying fallback:', err);
+        }
 
-    // Inject copy button into every field card
-    document.querySelectorAll('.field-card').forEach(card => {
-        const btn = document.createElement('button');
-        btn.className = 'copy-btn';
-        btn.title = 'Copy value';
-        btn.innerHTML = '&#x2398;'; // ⎘ copy symbol
-        card.appendChild(btn);
-    });
+        const fallbackInput = document.createElement('textarea');
+        fallbackInput.value = value;
+        fallbackInput.setAttribute('readonly', '');
+        fallbackInput.style.position = 'fixed';
+        fallbackInput.style.left = '-9999px';
+        document.body.appendChild(fallbackInput);
+        fallbackInput.select();
 
-    // Handle copy button clicks (delegated)
-    document.addEventListener('click', (e) => {
-        const btn = e.target.closest('.copy-btn');
-        if (!btn) return;
-        e.stopPropagation();
+        let success = false;
+        try {
+            success = document.execCommand('copy');
+        } catch (err) {
+            console.error('execCommand copy failed:', err);
+        }
 
-        const card = btn.closest('.field-card');
-        const valueDiv = card.querySelector('.field-value');
-        const text = valueDiv ? valueDiv.innerText.trim() : '';
+        document.body.removeChild(fallbackInput);
+        return success;
+    }
 
-        if (!text) return; // nothing to copy
-
-        navigator.clipboard.writeText(text).then(() => {
-            btn.innerHTML = '&#x2713;'; // ✓
-            btn.classList.add('copied');
-            setTimeout(() => {
-                btn.innerHTML = '&#x2398;';
-                btn.classList.remove('copied');
-            }, 1500);
-        }).catch(() => {
-            // Fallback for older browsers / non-HTTPS
-            const ta = document.createElement('textarea');
-            ta.value = text;
-            ta.style.position = 'fixed';
-            ta.style.opacity = '0';
-            document.body.appendChild(ta);
-            ta.select();
-            document.execCommand('copy');
-            document.body.removeChild(ta);
-            btn.innerHTML = '&#x2713;';
-            btn.classList.add('copied');
-            setTimeout(() => {
-                btn.innerHTML = '&#x2398;';
-                btn.classList.remove('copied');
-            }, 1500);
-        });
-    });
 });

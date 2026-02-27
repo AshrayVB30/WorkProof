@@ -3,7 +3,7 @@ FIELD_DEFINITIONS = {
         "Full Name": {"type": "text", "rule": "C", "required": True},
         "Gender": {"type": "text", "rule": "C", "required": False},
         "DOB": {"type": "date", "rule": "F", "format": "%m/%d/%Y"},
-        # "SSN": {"type": "text", "rule": "C", "required": False},
+        "SSN": {"type": "text", "rule": "C", "required": False},
         "Address 1": {"type": "text", "rule": "C", "required": False},
         "Address 2": {"type": "text", "rule": "C", "required": False},
         "City": {"type": "text", "rule": "C", "required": False},
@@ -17,7 +17,7 @@ FIELD_DEFINITIONS = {
         "Customer ID": {"type": "number", "rule": "A", "required": True},
         "A/C Type": {"type": "text", "rule": "C", "required": False},
         "A/c Name": {"type": "text", "rule": "C", "required": False},
-        # "A/c Name" : {"type": "text", "rule": "C", "required": False},
+        "A/c Number": {"type": "text", "rule": "C", "required": False},
         "IBAN": {"type": "text", "rule": "C", "required": False}, # Add validation later
         "BIC": {"type": "text", "rule": "C", "required": False},
         "BTC Address": {"type": "text", "rule": "C", "required": False},
